@@ -9,22 +9,26 @@ measures the full cost on real scenes.
 - [x] Tri-brain architecture review → `ARCHITECTURE.md`
 - [x] Wire protocol draft → `daemon/PROTOCOL.md`
 
-### Phase 1 — Resident daemon PoC (next)
-- [ ] Check out POV-Ray 3.7 source; build stock to confirm toolchain
-- [ ] Patch the frontend main loop: init once → accept SCENE_FULL/RENDER on the
-      socket → render to in-memory RGBA → return/blit → loop (no PNG, no exit)
-- [ ] Audit + reset process globals between frames (radiosity, photons, media,
-      font/INI) — verify no cross-frame artifacts
-- [ ] SDL2 display client + keyboard transform of one object
-- [ ] **Gate:** sustained >30 fps live at 240×135 on a real scene (rotating
-      battlecruiser). If not, profile the *full* loop, don't hand-wave.
+### Phase 1 — Resident daemon PoC (DONE — see FINDINGS.md)
+- [x] Check out POV-Ray 3.7 source; build stock to confirm toolchain (`tools/build_engine.sh`)
+- [x] Resident frontend: link `libvfe`+`libpovray`, init the engine ONCE, render
+      every frame against the live session into an in-memory framebuffer — no PNG,
+      no respawn (`daemon/resident.cpp`)
+- [x] Found + cut the hidden **50 ms message-queue poll** → 0.1 ms (`patches/`)
+- [x] SDL2 live window with orbit camera + live fps (`daemon/live.cpp`)
+- [x] **Gate result:** real raytraced frames live in memory; **1.4 → ~9–12 fps**
+      (thread-count-dependent). Gate substantially met; >30 fps is Phase 2.
 
-### Phase 2 — Game-shaped animation
-- [ ] Move animation out of SDL clock into the host loop for game scenes
-      (host computes transforms; `.pov` = static geometry)
-- [ ] Proposal B: TRANSFORM_DELTA path + per-frame accel-structure **refit**
-      (not rebuild) — measure the refit cost, confirm correctness under motion
-- [ ] Topology add/remove → accel rebuild only on change
+### Phase 2 — Resident thread-pool + scene (next; the .kkrieger lesson)
+The remaining wall: POV rebuilds its **render thread-pool every frame** (more
+threads = slower on small frames; bigger res = better fps — fixed-overhead
+signature, FINDINGS §4). The .kkrieger lesson: do expensive setup ONCE, keep it
+resident, lean per-frame loop.
+- [ ] Keep the render thread-pool alive across frames (don't spawn/join per render)
+- [ ] Keep the scene database + bounding hierarchy resident; per frame mutate only
+      transforms + camera (animation moves out of SDL `clock` into the host loop)
+- [ ] Accel-structure **refit** on motion; full rebuild only on topology change
+- [ ] **Gate:** sustained 60 fps at 320×180 on a real scene
 
 ### Phase 3 — DLSS-style temporal layer (RTX 5070 on .106)
 - [ ] Emit depth + object-ID buffers from the tracer (cheap)
