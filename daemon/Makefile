@@ -20,7 +20,11 @@ resident: resident.cpp $(POV)/vfe/libvfe.a $(POV)/source/libpovray.a
 live: live.cpp $(POV)/vfe/libvfe.a $(POV)/source/libpovray.a
 	$(CXX) $(CXXFLAGS) -std=c++11 -o $@ live.cpp $(ARCHIVES) $(LIBS) -lSDL2
 
-all: resident live
+# interactive rigged-character driver
+walk: walk.cpp $(POV)/vfe/libvfe.a $(POV)/source/libpovray.a
+	$(CXX) $(CXXFLAGS) -std=c++11 -o $@ walk.cpp $(ARCHIVES) $(LIBS) -lSDL2
+
+all: resident live walk
 
 clean:
 	rm -f resident live *.ppm *.png

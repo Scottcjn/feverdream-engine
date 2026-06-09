@@ -143,28 +143,70 @@ def main():
         g = flat16(corners) if flat else coons16(ids)
         if g: patches.append(g)
 
-    # --- emit ---
-    ptype = 0 if flat else 1
-    o=["#version 3.7;","global_settings { assumed_gamma 1.0 }",'#include "colors.inc"',
-       "background { rgb <0.05,0.05,0.10> }",
-       f"#default {{ texture {{ pigment {{ rgb <{color}> }} finish {{ ambient 0.3 diffuse 0.75 phong 0.5 }} }} }}",
-       "light_source { <-40,60,-80> rgb 1 }",
-       "light_source { <40,20,-40> rgb <0.3,0.3,0.4> shadowless }"]
     if not patches:
         sys.exit("no patches built — check .mdl [MESH]/[PATCHES] sections")
+    rig = "--rig" in a
+    ptype = 0 if flat else 1
+    def pstr(g):
+        rows="\n    ".join(" ".join(f"<{p[0]:.4f},{p[1]:.4f},{p[2]:.4f}>" for p in g[r*4:r*4+4]) for r in range(4))
+        return f"  bicubic_patch {{ type {ptype} flatness 0 u_steps 3 v_steps 3\n    {rows}\n  }}"
+    def cen(g):  # patch centroid
+        return (sum(p[0] for p in g)/16, sum(p[1] for p in g)/16, sum(p[2] for p in g)/16)
+
     allp=[p for g in patches for p in g]
     xs=[p[0] for p in allp]; ys=[p[1] for p in allp]; zs=[p[2] for p in allp]
+    minX,maxX=min(xs),max(xs); minY,maxY=min(ys),max(ys)
     cx,cy,cz=(sum(xs)/len(xs),sum(ys)/len(ys),sum(zs)/len(zs))
-    span=max(max(xs)-min(xs),max(ys)-min(ys),max(zs)-min(zs))
-    o.append(f"camera {{ location <{cx},{cy},{cz-span*1.8}> look_at <{cx},{cy},{cz}> angle 40 right x*4/3 up y }}")
-    o.append("union {")
-    for g in patches:
-        rows="\n    ".join(" ".join(f"<{p[0]:.4f},{p[1]:.4f},{p[2]:.4f}>" for p in g[r*4:r*4+4]) for r in range(4))
-        o.append(f"  bicubic_patch {{ type {ptype} flatness 0 u_steps 3 v_steps 3\n    {rows}\n  }}")
-    o.append("}")
+    H=maxY-minY; midX=(minX+maxX)/2; span=max(maxX-minX,H,max(zs)-min(zs))
+
+    o=["#version 3.7;","global_settings { assumed_gamma 1.0 }",'#include "colors.inc"',
+       "background { rgb <0.10,0.12,0.20> }",
+       f"#default {{ texture {{ pigment {{ rgb <{color}> }} finish {{ ambient 0.3 diffuse 0.75 phong 0.5 }} }} }}",
+       "light_source { <-40,90,-60> rgb 1.0 }",
+       "light_source { <40,30,-40> rgb <0.3,0.3,0.45> shadowless }"]
+
+    if not rig:
+        o.append(f"camera {{ location <{cx},{cy},{cz-span*1.8}> look_at <{cx},{cy},{cz}> angle 40 right x*4/3 up y }}")
+        o.append("union {\n" + "\n".join(pstr(g) for g in patches) + "\n}")
+    else:
+        # FK rig: split into legs (below hip, by X side) + body; swing legs about hips
+        hipY = minY + 0.46*H
+        legL,legR,body = [],[],[]
+        for g in patches:
+            gx,gy,gz = cen(g)
+            if gy < hipY: (legL if gx>midX else legR).append(g)
+            else:         body.append(g)
+        def piv(grp,side):
+            if grp: return (sum(cen(g)[0] for g in grp)/len(grp), hipY, sum(cen(g)[2] for g in grp)/len(grp))
+            return (midX+side*H*0.12, hipY, cz)
+        pL,pR = piv(legL,1), piv(legR,-1)
+        o += ["#ifndef(POSX) #declare POSX=0; #end",
+              "#ifndef(POSZ) #declare POSZ=0; #end",
+              "#ifndef(JUMP) #declare JUMP=0; #end",
+              "#ifndef(TURN) #declare TURN=0; #end",
+              "#ifndef(STEP) #declare STEP=0; #end",
+              "#declare sw = sin(STEP)*24;   // leg swing degrees",
+              f"plane {{ y, {minY:.3f} pigment {{ checker rgb 0.30 rgb 0.45 scale {H*0.14:.2f} }} finish {{ ambient 0.4 }} }}"]
+        def leg_union(grp,p,sign):
+            return (f"  union {{\n" + "\n".join(pstr(g) for g in grp) +
+                    f"\n    translate <{-p[0]:.3f},{-p[1]:.3f},{-p[2]:.3f}> rotate x*(sw*{sign}) "
+                    f"translate <{p[0]:.3f},{p[1]:.3f},{p[2]:.3f}>\n  }}")
+        o.append("union {")
+        o.append("  union {\n" + "\n".join(pstr(g) for g in body) + "\n  }")
+        o.append(leg_union(legL,pL, 1))
+        o.append(leg_union(legR,pR,-1))
+        o.append(f"  translate <{-midX:.3f},{-minY:.3f},{-cz:.3f}>   // origin at feet/center")
+        o.append("  rotate y*TURN")
+        o.append("  translate <POSX, JUMP, POSZ>")
+        o.append("}")
+        # follow camera (orbits behind via TURN-independent 3/4 view)
+        o.append(f"camera {{ location <POSX-{H*0.25:.2f}, {H*0.78:.2f}, POSZ-{H*2.3:.2f}> "
+                 f"look_at <POSX, {H*0.52:.2f}, POSZ> angle 48 right x*16/9 up y }}")
+
     open(dst,"w").write("\n".join(o)+"\n")
-    sys.stderr.write(f">> {dst}: {len(pos)} CPs, {len(splines)} splines, "
-                     f"{len(patches)} patches ({'flat' if flat else 'smooth Coons'})\n")
+    sys.stderr.write(f">> {dst}: {len(pos)} CPs, {len(splines)} splines, {len(patches)} patches"
+                     + (f" | RIG: body+2 legs (hipY={minY + 0.46*H:.1f})" if rig else
+                        f" ({'flat' if flat else 'smooth Coons'})") + "\n")
 
 if __name__=="__main__":
     main()
