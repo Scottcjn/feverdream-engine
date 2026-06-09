@@ -1,5 +1,6 @@
 vendor-povray/
 daemon/resident
+daemon/live
 daemon/*.o
 *.ppm
 *.png

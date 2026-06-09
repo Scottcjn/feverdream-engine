@@ -16,5 +16,11 @@ LIBS := -lXpm -lSM -lICE -lX11 \
 resident: resident.cpp $(POV)/vfe/libvfe.a $(POV)/source/libpovray.a
 	$(CXX) $(CXXFLAGS) -std=c++11 -o $@ resident.cpp $(ARCHIVES) $(LIBS)
 
+# live SDL2 window build
+live: live.cpp $(POV)/vfe/libvfe.a $(POV)/source/libpovray.a
+	$(CXX) $(CXXFLAGS) -std=c++11 -o $@ live.cpp $(ARCHIVES) $(LIBS) -lSDL2
+
+all: resident live
+
 clean:
-	rm -f resident *.ppm *.png
+	rm -f resident live *.ppm *.png
