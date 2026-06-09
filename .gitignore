@@ -1,4 +1,5 @@
+vendor-povray/
+daemon/resident
+daemon/*.o
+*.ppm
 *.png
-*.pov.tmp
-__pycache__/
-*.pyc

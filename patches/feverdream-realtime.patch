@@ -1,0 +1,39 @@
+diff --git a/vfe/vfepovms.cpp b/vfe/vfepovms.cpp
+index e9e7063..fc3b226 100644
+--- a/vfe/vfepovms.cpp
++++ b/vfe/vfepovms.cpp
+@@ -187,10 +187,16 @@ void *SysQNode::Receive (int *pLen, bool Blocking)
+     if (Blocking == false)
+       return (NULL);
+ 
+-    // TODO: have a shorter wait but loop, and check for system shutdown
++    // Feverdream Engine: was 50ms (50000000ns) — fine for batch, but it gates
++    // every frontend<->backend phase message, costing ~8x50ms=360ms/frame of
++    // pure sleep in a resident real-time loop. 1ms poll => ~real-time. The
++    // condition still wakes immediately on notify; this only bounds the fallback.
+     boost::xtime t;
+     boost::xtime_get (&t, POV_TIME_UTC);
+-    t.nsec += 50000000 ;
++    t.nsec += 100000 ;   // 0.1ms (was 50ms). Each rendered pixel-BLOCK is a POVMS
++                         // message; the backend->frontend send doesn't reliably wake
++                         // this cv, so every block eats one full poll. ~100 blocks/frame
++                         // => poll granularity IS the frame cost. 0.1ms => ~real-time.
+     m_Event.timed_wait (lock, t);
+ 
+     if (m_Count == 0)
+diff --git a/vfe/vfesession.cpp b/vfe/vfesession.cpp
+index 4e99628..e88ef15 100644
+--- a/vfe/vfesession.cpp
++++ b/vfe/vfesession.cpp
+@@ -504,6 +504,11 @@ bool vfeSession::ProcessFrontend (void)
+ 
+ void vfeSession::StateChanged (pov_frontend::State NewState)
+ {
++  if (getenv("FD_TRACE_STATES")) {
++    struct timespec _ts; clock_gettime(CLOCK_MONOTONIC, &_ts);
++    fprintf(stderr, "  [state %ld.%03ld] %d -> %d\n",
++            (long)_ts.tv_sec, _ts.tv_nsec/1000000, (int)m_BackendState, (int)NewState);
++  }
+   if (NewState == kReady || NewState == kStopping)
+     if (m_BackendState > kReady)
+       RenderStopped () ;
