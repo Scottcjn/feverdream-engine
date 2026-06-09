@@ -1,0 +1,4 @@
+*.png
+*.pov.tmp
+__pycache__/
+*.pyc
