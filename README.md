@@ -36,8 +36,8 @@ hidden coarse poll/sleep loops (a 50ms message-queue poll + 50ms/10ms backend
 driver loops) down to ~1ms. It now scales with resolution like a normal
 renderer — trace-bound, not overhead-bound.
 
-See **[FINDINGS.md](FINDINGS.md)** for the full measured story and the
-`.kkrieger`-inspired Phase 2 (keep the thread-pool + scene resident → target 60+).
+See **[FINDINGS.md](FINDINGS.md)** for the full measured story (and the
+`.kkrieger`-inspired further optimizations for heavy scenes).
 
 ## Status
 
@@ -48,7 +48,7 @@ See **[FINDINGS.md](FINDINGS.md)** for the full measured story and the
 | Daemon wire protocol | ✅ spec'd (`daemon/PROTOCOL.md`) |
 | Resident POV-Ray daemon (frontend patch) | ✅ built — **77 fps**, real-time |
 | Backend driver-loop delays cut (the 60fps wall) | ✅ done — see FINDINGS.md |
-| SDL/GL live window + input loop | 🚧 in progress |
+| SDL2 live window + orbit controls (`daemon/live.cpp`) | ✅ built |
 | DLSS-style temporal upscale on RTX 5070 | ⛅ planned (`ROADMAP.md`) |
 
 This is a sibling to [bottube-feverdream](https://github.com/Scottcjn/bottube-feverdream)
