@@ -1,3 +1,30 @@
+diff --git a/source/backend/scene/scene.cpp b/source/backend/scene/scene.cpp
+index 3aa48ec..a5eeb61 100644
+--- a/source/backend/scene/scene.cpp
++++ b/source/backend/scene/scene.cpp
+@@ -688,7 +688,7 @@ void Scene::ParserControlThread()
+ 		if(stopRequsted == false)
+ 		{
+ 			boost::thread::yield();
+-			Delay(10);
++			Delay(1);   // Feverdream: was 10ms. Parse-driver poll for task completion.
+ 		}
+ 	}
+ }
+diff --git a/source/backend/scene/view.cpp b/source/backend/scene/view.cpp
+index 962a089..78a79bb 100644
+--- a/source/backend/scene/view.cpp
++++ b/source/backend/scene/view.cpp
+@@ -1401,7 +1401,8 @@ void View::RenderControlThread()
+ 		if(stopRequsted == false)
+ 		{
+ 			boost::thread::yield();
+-			Delay(50);
++			Delay(1);   // Feverdream: was 50ms. Render-driver poll for task completion;
++			            // a sub-ms render otherwise waits ~50ms before the loop notices.
+ 		}
+ 	}
+ }
 diff --git a/vfe/vfepovms.cpp b/vfe/vfepovms.cpp
 index e9e7063..fc3b226 100644
 --- a/vfe/vfepovms.cpp

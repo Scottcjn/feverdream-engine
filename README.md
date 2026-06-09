@@ -30,10 +30,11 @@ loop `receive scene → render to an in-memory framebuffer → blit`, never touc
 the disk. POV-Ray is open source, so we modify it rather than fake it.
 
 **This is built** (`daemon/resident.cpp`) and it renders real raytraced frames
-live in memory. Measured result so far: **stock 1.4 fps → ~9–12 fps resident**,
-after patching a hidden **50 ms message-queue poll** down to 0.1 ms. The next
-wall is POV rebuilding its **thread-pool every frame** (more threads = slower on
-small frames; bigger resolutions = *better* fps — the fixed-overhead signature).
+live in memory. Measured result: **stock 1.4 fps → 77 fps** (~55×) at 320×180 on a reflective
+scene — fully raytraced, live in memory, no disk. Got there by cutting three
+hidden coarse poll/sleep loops (a 50ms message-queue poll + 50ms/10ms backend
+driver loops) down to ~1ms. It now scales with resolution like a normal
+renderer — trace-bound, not overhead-bound.
 
 See **[FINDINGS.md](FINDINGS.md)** for the full measured story and the
 `.kkrieger`-inspired Phase 2 (keep the thread-pool + scene resident → target 60+).
@@ -45,8 +46,8 @@ See **[FINDINGS.md](FINDINGS.md)** for the full measured story and the
 | Benchmark proving the thesis (`bench.sh`) | ✅ real, reproducible |
 | Architecture, reviewed by 3 independent models | ✅ see `ARCHITECTURE.md` |
 | Daemon wire protocol | ✅ spec'd (`daemon/PROTOCOL.md`) |
-| Resident POV-Ray daemon (frontend patch) | ✅ built — real frames, ~9–12 fps |
-| Resident thread-pool + scene (Phase 2) | 🚧 next — the wall to 60 fps |
+| Resident POV-Ray daemon (frontend patch) | ✅ built — **77 fps**, real-time |
+| Backend driver-loop delays cut (the 60fps wall) | ✅ done — see FINDINGS.md |
 | SDL/GL live window + input loop | 🚧 in progress |
 | DLSS-style temporal upscale on RTX 5070 | ⛅ planned (`ROADMAP.md`) |
 
