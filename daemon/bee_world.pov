@@ -99,7 +99,7 @@ plane { y, 0
 #declare bx = sin(bt*2*pi)*7;
 #declare bz = cos(bt*2*pi)*7 - 2;
 #declare by = 2.6 + sin(bt*4*pi)*0.7;
-#declare bface = degrees(atan2(cos(bt*2*pi), -sin(bt*2*pi)));   // tangent of the loop
+#declare bface = degrees(bt*2*pi) - 90;   // face along the velocity tangent (nose-first)
 Bee(<bx,by,bz>, bface, bt*240)
 
 // --- camera: orbit the meadow (arrows in live.cpp) ---
