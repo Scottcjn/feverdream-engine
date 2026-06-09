@@ -11,7 +11,8 @@ light_source { <40,30,-40> rgb <0.3,0.3,0.45> shadowless }
 #ifndef(TURN) #declare TURN=0; #end
 #ifndef(STEP) #declare STEP=0; #end
 #declare sw = sin(STEP)*24;   // leg swing degrees
-plane { y, -0.179 pigment { checker rgb 0.30 rgb 0.45 scale 14.19 } finish { ambient 0.4 } }
+plane { y, -0.179 pigment { checker rgb <0.34,0.30,0.22> rgb <0.42,0.38,0.28> scale 14.19 } finish { ambient 0.45 } }
+sphere { <86.2, 30.2, -15.2>, 30.4 pigment { rgb <0.10,0.10,0.12> } finish { ambient 0.05 diffuse 0.15 reflection { 0.85 } phong 1 phong_size 120 metallic } }
 union {
   union {
   bicubic_patch { type 1 flatness 0 u_steps 3 v_steps 3

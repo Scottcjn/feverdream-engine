@@ -186,7 +186,11 @@ def main():
               "#ifndef(TURN) #declare TURN=0; #end",
               "#ifndef(STEP) #declare STEP=0; #end",
               "#declare sw = sin(STEP)*24;   // leg swing degrees",
-              f"plane {{ y, {minY:.3f} pigment {{ checker rgb <0.34,0.30,0.22> rgb <0.42,0.38,0.28> scale {H*0.14:.2f} }} finish {{ ambient 0.45 }} }}"]
+              f"plane {{ y, {minY:.3f} pigment {{ checker rgb <0.34,0.30,0.22> rgb <0.42,0.38,0.28> scale {H*0.14:.2f} }} finish {{ ambient 0.45 }} }}",
+              # reflective chrome sphere — the raytracer flex: Thom reflects in it as he walks by
+              f"sphere {{ <{H*0.85:.1f}, {minY+H*0.30:.1f}, {-H*0.15:.1f}>, {H*0.30:.1f} "
+              f"pigment {{ rgb <0.10,0.10,0.12> }} finish {{ ambient 0.05 diffuse 0.15 "
+              f"reflection {{ 0.85 }} phong 1 phong_size 120 metallic }} }}"]
         if "--battle" in a:
             S=H*0.18; R=H*1.4
             o += [

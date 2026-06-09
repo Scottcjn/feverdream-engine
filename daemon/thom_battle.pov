@@ -12,6 +12,7 @@ light_source { <40,30,-40> rgb <0.3,0.3,0.45> shadowless }
 #ifndef(STEP) #declare STEP=0; #end
 #declare sw = sin(STEP)*24;   // leg swing degrees
 plane { y, -0.179 pigment { checker rgb <0.34,0.30,0.22> rgb <0.42,0.38,0.28> scale 14.19 } finish { ambient 0.45 } }
+sphere { <86.2, 30.2, -15.2>, 30.4 pigment { rgb <0.10,0.10,0.12> } finish { ambient 0.05 diffuse 0.15 reflection { 0.85 } phong 1 phong_size 120 metallic } }
 #macro BattleTank(P, ang, s)
   union {
     box {<-1.2,-0.6,-1.8>,<1.2,0.5,1.8> pigment{rgb<0.50,0.45,0.30>} finish{phong 0.3}}
