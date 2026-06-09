@@ -186,7 +186,31 @@ def main():
               "#ifndef(TURN) #declare TURN=0; #end",
               "#ifndef(STEP) #declare STEP=0; #end",
               "#declare sw = sin(STEP)*24;   // leg swing degrees",
-              f"plane {{ y, {minY:.3f} pigment {{ checker rgb 0.30 rgb 0.45 scale {H*0.14:.2f} }} finish {{ ambient 0.4 }} }}"]
+              f"plane {{ y, {minY:.3f} pigment {{ checker rgb <0.34,0.30,0.22> rgb <0.42,0.38,0.28> scale {H*0.14:.2f} }} finish {{ ambient 0.45 }} }}"]
+        if "--battle" in a:
+            S=H*0.18; R=H*1.4
+            o += [
+              "#macro BattleTank(P, ang, s)",
+              "  union {",
+              "    box {<-1.2,-0.6,-1.8>,<1.2,0.5,1.8> pigment{rgb<0.50,0.45,0.30>} finish{phong 0.3}}",
+              "    box {<-1.6,-0.8,-1.9>,<-1.0,0.25,1.9> pigment{rgb<0.14,0.14,0.17>}}",
+              "    box {< 1.0,-0.8,-1.9>,< 1.6,0.25,1.9> pigment{rgb<0.14,0.14,0.17>}}",
+              "    superellipsoid{<0.35,0.35> scale<0.95,0.55,0.95> translate<0,0.95,0.1> pigment{rgb<0.55,0.55,0.6>} finish{phong 0.6}}",
+              "    cylinder{<0,1.0,-0.4>,<0,1.0,-3.0>,0.18 pigment{rgb<0.4,0.4,0.45>}}",
+              "    scale s rotate y*ang translate P",
+              "  }",
+              "#end",
+              "#macro Fire(P, s)",
+              "  sphere{ P, s pigment{rgbt<1,0.55,0.2,0.25>} finish{ambient 2.5} }",
+              "  light_source{ P+<0,s,0> color rgb<1,0.55,0.25>*2 shadowless }",
+              "#end",
+              "background { rgb <0.10,0.06,0.05> }",
+              f"BattleTank(<{-R:.1f},{minY:.1f},{ R:.1f}>,  35, {S:.2f})",
+              f"BattleTank(<{ R*0.8:.1f},{minY:.1f},{ R:.1f}>,-50, {S:.2f})",
+              f"BattleTank(<{-R*0.5:.1f},{minY:.1f},{-R:.1f}>, 160, {S:.2f})",
+              f"box {{<{-R*1.3:.1f},{minY:.1f},{R*0.4:.1f}>,<{-R*0.7:.1f},{minY+H*0.25:.1f},{R*0.55:.1f}> pigment{{rgb<0.3,0.28,0.22>}} }}",
+              f"Fire(<{R*0.9:.1f},{minY+H*0.08:.1f},{R*0.95:.1f}>, {H*0.10:.2f})",
+              f"Fire(<{-R*0.5:.1f},{minY+H*0.08:.1f},{-R*0.95:.1f}>, {H*0.08:.2f})"]
         def leg_union(grp,p,sign):
             return (f"  union {{\n" + "\n".join(pstr(g) for g in grp) +
                     f"\n    translate <{-p[0]:.3f},{-p[1]:.3f},{-p[2]:.3f}> rotate x*(sw*{sign}) "
