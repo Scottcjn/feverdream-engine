@@ -105,6 +105,8 @@ static double render_frame(vfeUnixSession* session, const std::string& scene,
     opts.AddCommand("Antialias=off");
     opts.AddCommand("Output_to_File=off");   // no disk -- the whole point
     opts.AddCommand("Display=on");           // route pixels to our display
+    { const char* bs = getenv("FD_BLOCK");   // bigger blocks => fewer pixel messages
+      snprintf(b, sizeof b, "Render_Block_Size=%s", bs ? bs : "32"); opts.AddCommand(b); }
     opts.AddCommand("Preview_Start_Size=1"); // stream pixels to the display...
     opts.AddCommand("Preview_End_Size=1");   // ...at full res in one pass
     opts.AddCommand("Verbose=off");

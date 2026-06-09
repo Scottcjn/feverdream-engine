@@ -5,9 +5,12 @@
 // captured to memory and uploaded to an SDL texture. You can orbit the camera
 // with the arrow keys while POV-Ray re-renders every frame in real time.
 //
-//   live [scene.pov] [W] [H] [scale] [libdir]
-//   arrows = orbit/zoom   space = pause spin   ESC = quit
+//   live [scene.pov] [winW] [winH] [rdiv] [libdir]
+//     winW/winH = output window;  rdiv = upscale factor (raytrace at win/rdiv).
+//   arrows orbit/zoom | [ ] internal res (fps<->sharpness) | F filter | space | ESC
 //
+// rdiv is DLSS-style spatial upscaling: trace tiny, upscale big => huge fps at
+// high output res. nearest filter = the VGA/retro crunch; linear/best = smooth.
 // This is the "see it" build. Run it on a machine with a display.
 
 #include <cstdio>
@@ -93,26 +96,41 @@ static bool render_frame(vfeUnixSession* s, const std::string& scene,
 
 int main(int argc, char** argv)
 {
+    // OUTPUT (window) res is fixed; INTERNAL (raytraced) res = output / div.
+    // Raytrace tiny, upscale big -- DLSS-style spatial upscaling. The whole point:
+    // huge fps from a small render, presented at high res.
     std::string scene  = (argc > 1) ? argv[1] : "spin.pov";
-    int W      = (argc > 2) ? atoi(argv[2]) : 320;
-    int H      = (argc > 3) ? atoi(argv[3]) : 180;
-    int scale  = (argc > 4) ? atoi(argv[4]) : 4;
+    int winW   = (argc > 2) ? atoi(argv[2]) : 1280;   // output window width
+    int winH   = (argc > 3) ? atoi(argv[3]) : 720;    // output window height
+    int rdiv   = (argc > 4) ? atoi(argv[4]) : 4;      // internal = output / rdiv
     std::string libdir = (argc > 5) ? argv[5] : "/usr/share/povray-3.7/include";
+    if (rdiv < 1) rdiv = 1;
 
     if (SDL_Init(SDL_INIT_VIDEO) != 0) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
     SDL_Window* win = SDL_CreateWindow("Feverdream Engine - live POV-Ray",
-        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, W * scale, H * scale, SDL_WINDOW_SHOWN);
+        SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, winW, winH, SDL_WINDOW_SHOWN);
     SDL_Renderer* ren = SDL_CreateRenderer(win, -1, SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
-    SDL_Texture* tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA32,
-        SDL_TEXTUREACCESS_STREAMING, W, H);
-    SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_NONE);
-    SDL_RenderSetLogicalSize(ren, W, H);
 
     vfeUnixSession* session = new vfeUnixSession();
     if (session->Initialize(NULL, NULL) != vfeNoError) {
         fprintf(stderr, "session init: %s\n", session->GetErrorString()); return 1;
     }
     session->SetDisplayCreator(CreateCaptureDisplay);
+
+    // internal render res + texture, (re)built whenever the upscale divisor changes
+    int rW = 0, rH = 0;
+    SDL_Texture* tex = NULL;
+    const char* filtName[3] = { "nearest", "linear", "best" };
+    int filt = 0;  // 0=nearest (VGA crunch), 1=linear, 2=best
+    auto rebuild_tex = [&]() {
+        rW = winW / rdiv; rH = winH / rdiv;
+        if (rW < 32) rW = 32; if (rH < 18) rH = 18;
+        if (tex) SDL_DestroyTexture(tex);
+        tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA32, SDL_TEXTUREACCESS_STREAMING, rW, rH);
+        SDL_SetTextureBlendMode(tex, SDL_BLENDMODE_NONE);
+        SDL_SetTextureScaleMode(tex, (SDL_ScaleMode)filt);
+    };
+    rebuild_tex();
 
     double cama = 25.0, camr = 9.0, clock = 0.0;
     bool spinning = true, running = true;
@@ -121,32 +139,35 @@ int main(int argc, char** argv)
     long maxframes = getenv("FD_MAXFRAMES") ? atol(getenv("FD_MAXFRAMES")) : 0; // headless self-test
     long frames_done = 0;
 
-    printf("Feverdream live: arrows orbit/zoom, space pause spin, ESC quit\n");
+    printf("Feverdream live: arrows orbit/zoom | [ ] internal res | F filter | space pause | ESC quit\n");
     while (running) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) running = false;
             else if (e.type == SDL_KEYDOWN) {
                 switch (e.key.keysym.sym) {
-                    case SDLK_ESCAPE: running = false; break;
-                    case SDLK_LEFT:   cama -= 8;  break;
-                    case SDLK_RIGHT:  cama += 8;  break;
-                    case SDLK_UP:     camr = fmax(3.0, camr - 0.6); break;
-                    case SDLK_DOWN:   camr = fmin(20.0, camr + 0.6); break;
-                    case SDLK_SPACE:  spinning = !spinning; break;
+                    case SDLK_ESCAPE:     running = false; break;
+                    case SDLK_LEFT:       cama -= 8;  break;
+                    case SDLK_RIGHT:      cama += 8;  break;
+                    case SDLK_UP:         camr = fmax(3.0, camr - 0.6); break;
+                    case SDLK_DOWN:       camr = fmin(20.0, camr + 0.6); break;
+                    case SDLK_SPACE:      spinning = !spinning; break;
+                    case SDLK_LEFTBRACKET:  if (rdiv > 1)  { rdiv--; rebuild_tex(); } break; // sharper/slower
+                    case SDLK_RIGHTBRACKET: if (rdiv < 16) { rdiv++; rebuild_tex(); } break; // blockier/faster
+                    case SDLK_f:          filt = (filt + 1) % 3; SDL_SetTextureScaleMode(tex, (SDL_ScaleMode)filt); break;
                 }
             }
         }
         if (spinning) clock = fmod((SDL_GetTicks() - t_start) / 4000.0, 1.0);  // 4s loop
 
-        if (!render_frame(session, scene, libdir, W, H, clock, cama, camr)) {
+        if (!render_frame(session, scene, libdir, rW, rH, clock, cama, camr)) {
             fprintf(stderr, "render failed: %s\n", session->GetErrorString());
             break;
         }
-        if (g_w == W && g_h == H && !g_fb.empty()) {
-            SDL_UpdateTexture(tex, NULL, g_fb.data(), W * 4);
+        if (g_w == rW && g_h == rH && !g_fb.empty()) {
+            SDL_UpdateTexture(tex, NULL, g_fb.data(), rW * 4);
             SDL_RenderClear(ren);
-            SDL_RenderCopy(ren, tex, NULL, NULL);
+            SDL_RenderCopy(ren, tex, NULL, NULL);   // upscales internal -> window
             SDL_RenderPresent(ren);
         }
         if (maxframes && ++frames_done >= maxframes) {  // headless self-test: dump + exit
@@ -154,20 +175,23 @@ int main(int argc, char** argv)
             if (f) { fprintf(f, "P6\n%d %d\n255\n", g_w, g_h);
                      for (size_t i = 0; i < (size_t)g_w * g_h; ++i) fwrite(&g_fb[i*4], 1, 3, f);
                      fclose(f); }
-            printf("self-test: %ld frames rendered, dumped live_selftest.ppm\n", frames_done);
+            printf("self-test: %ld frames at internal %dx%d -> window %dx%d\n", frames_done, rW, rH, winW, winH);
             running = false;
         }
-        if (++fps_n >= 10) {  // update title fps every ~10 frames
+        if (++fps_n >= 10) {  // update title every ~10 frames
             Uint32 now = SDL_GetTicks();
             double fps = fps_n * 1000.0 / (now - fps_t);
-            char title[96];
-            snprintf(title, sizeof title, "Feverdream Engine - live POV-Ray  |  %dx%d  %.1f fps", W, H, fps);
+            char title[140];
+            snprintf(title, sizeof title,
+                "Feverdream - raytrace %dx%d -> %dx%d (1/%d, %s)  |  %.0f fps",
+                rW, rH, winW, winH, rdiv, filtName[filt], fps);
             SDL_SetWindowTitle(win, title);
             fps_t = now; fps_n = 0;
         }
     }
 
     session->Shutdown(); delete session;
-    SDL_DestroyTexture(tex); SDL_DestroyRenderer(ren); SDL_DestroyWindow(win); SDL_Quit();
+    if (tex) SDL_DestroyTexture(tex);
+    SDL_DestroyRenderer(ren); SDL_DestroyWindow(win); SDL_Quit();
     return 0;
 }
