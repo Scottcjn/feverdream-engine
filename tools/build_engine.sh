@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
 # build_engine.sh — fetch POV-Ray 3.7, apply the Feverdream real-time patch, build
 # the engine archives, then build the resident render daemon.
 #

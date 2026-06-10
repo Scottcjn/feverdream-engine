@@ -1,5 +1,7 @@
 # Feverdream Engine — real-time POV-Ray
 
+[![BCOS Certified](https://img.shields.io/badge/BCOS-Certified-brightgreen?style=flat)](BCOS.md) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 > The gorgeous old raytraced look — *ReBoot*, *Donkey Kong Country*, early *Toy
 > Story* — rendered **live, in a game loop**, instead of baked overnight.
 

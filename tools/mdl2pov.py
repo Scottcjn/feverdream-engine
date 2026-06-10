@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
 """mdl2pov.py — native Hash Animation:Master .mdl -> POV-Ray 3.7 converter (*nix).
 
 No Wine, no HamaPatch. Reads A:M's text .mdl directly:
@@ -159,7 +160,7 @@ def main():
     cx,cy,cz=(sum(xs)/len(xs),sum(ys)/len(ys),sum(zs)/len(zs))
     H=maxY-minY; midX=(minX+maxX)/2; span=max(maxX-minX,H,max(zs)-min(zs))
 
-    o=["#version 3.7;","global_settings { assumed_gamma 1.0 }",'#include "colors.inc"',
+    o=["// SPDX-License-Identifier: MIT","#version 3.7;","global_settings { assumed_gamma 1.0 }",'#include "colors.inc"',
        "background { rgb <0.10,0.12,0.20> }",
        f"#default {{ texture {{ pigment {{ rgb <{color}> }} finish {{ ambient 0.3 diffuse 0.75 phong 0.5 }} }} }}",
        "light_source { <-40,90,-60> rgb 1.0 }",

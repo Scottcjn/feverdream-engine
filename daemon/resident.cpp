@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // resident.cpp -- Feverdream Engine: resident POV-Ray render loop.
 //
 // The thesis (see ../bench.sh): a stock `povray` call spends ~700ms on process

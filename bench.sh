@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
 # bench.sh — prove the thesis: POV-Ray's per-frame cost is process lifecycle +
 # disk, NOT raytracing. Self-contained; writes its own test scene. Needs povray.
 #

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // live.cpp -- Feverdream Engine: SDL2 live window over the resident POV-Ray engine.
 //
 // Same idea as resident.cpp, but instead of timing N headless frames it opens a

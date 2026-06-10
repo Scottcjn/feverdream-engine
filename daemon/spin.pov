@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #version 3.7;
 #include "colors.inc"
 // camera orbit controllable from the host (CAMA=azimuth deg, CAMR=radius)

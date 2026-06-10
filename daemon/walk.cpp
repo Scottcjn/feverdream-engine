@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // walk.cpp -- Feverdream Engine: drive a rigged character in the live engine.
 //
 // Renders a --rig scene from mdl2pov.py (a character split into body + 2 legs that

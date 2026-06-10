@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
 """ham2pov.py — convert a HamaPatch / MegaPov .pov export into a clean POV-Ray 3.7
 scene our engine can render.
 

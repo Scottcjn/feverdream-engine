@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 // bee_world.pov — early-CGI meadow: gradient sky + clouds, grassy ground, simple
 // trees, and a bee flying a looping path with flapping wings. Real-time in the
 // Feverdream engine. clock drives the bee; CAMA/CAMR orbit the camera (live.cpp).
