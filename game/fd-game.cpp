@@ -296,6 +296,14 @@ static float ground_height(float px, float pz, float feet, float tol) {
 // frame -- it may mutate dynamic boxes' cx/cz in the global `boxes` table,
 // which the host reads back into BOTH the collision world and the renderer
 // declares. Player table is read-only this round.
+// game state the script publishes for the HUD / cards / end screens
+struct GameHud {
+    int score = 0, lives = -1;          // lives -1 = script has no lives concept
+    int world = 0;                      // game_world: 0 = no indicator
+    char state[16] = "playing";         // "playing" | "won" | "lost"
+};
+static GameHud g_hud;
+
 static lua_State* g_L = NULL;
 static char g_title[64] = "fd-game";    // scripts override via game_title
 static char g_next[128] = "";           // scripts chain levels via next_level
@@ -417,6 +425,11 @@ static bool load_script(const char* path) {
     }
     lua_pop(g_L, 1);
 
+    lua_getglobal(g_L, "game_world");        // file-scope: valid at load time,
+    if (lua_isnumber(g_L, -1))               // so level cards know their number
+        g_hud.world = (int)lua_tointeger(g_L, -1);
+    lua_pop(g_L, 1);
+
     snprintf(g_current, sizeof g_current, "%s", path);
     return true;
 }
@@ -426,14 +439,6 @@ struct Player {
     float step = 0;
     float jy = 0, jv = 0; bool grounded = true;
 };
-
-// game state the script publishes for the HUD / end screens
-struct GameHud {
-    int score = 0, lives = -1;          // lives -1 = script has no lives concept
-    int world = 0;                      // game_world: 0 = no indicator
-    char state[16] = "playing";         // "playing" | "won" | "lost"
-};
-static GameHud g_hud;
 
 // call on_tick(t, dt, player); read back dynamic boxes, knockback, game state
 static void script_tick(double t, double dt, Player& p) {
@@ -506,6 +511,91 @@ static void script_tick(double t, double dt, Player& p) {
     if (lua_isstring(g_L, -1))
         snprintf(g_hud.state, sizeof g_hud.state, "%s", lua_tostring(g_L, -1));
     lua_pop(g_L, 1);
+}
+
+// ====================== title cards (level / game over / complete) ==========
+// Cards are raytraced like everything else: wilderness backdrop + extruded
+// gold text + a set piece (spinning acorn+Chunkins, or the smug baddie).
+enum CardStyle { CARD_GOLD, CARD_DARK };
+
+static void card_text(std::string& s, const char* msg, float scale,
+                      float y, float zoff, const char* rgb, float maxw) {
+    // sanitize for a POV string literal, then shrink-to-fit and center
+    char clean[96]; size_t n = 0;
+    for (const char* c = msg; *c && n < sizeof clean - 1; ++c)
+        if (*c != '"' && *c != '\\') clean[n++] = *c;
+    clean[n] = 0;
+    float w = 0.78f * scale * (float)n;           // timrom ~0.78 units/char/scale
+    if (w > maxw && n) { scale *= maxw / w; w = maxw; }
+    float x = -0.5f * w;
+    char buf[256];
+    snprintf(buf, sizeof buf,
+        "text { ttf \"timrom.ttf\" \"%s\" 0.35, 0 pigment { rgb <%s> }\n"
+        "  finish { phong 0.7 reflection 0.08 } scale <%.2f,%.2f,1>"
+        " translate <%.2f,%.2f,%.2f> }\n",
+        clean, rgb, scale, scale, x, y, zoff);
+    s += buf;
+}
+
+static std::string build_card_scene(const char* big, const char* sub, CardStyle style) {
+    std::string s =
+        "#version 3.7;\n"
+        "#ifndef (SPIN) #declare SPIN=0; #end\n"
+        "global_settings { assumed_gamma 1.0 }\n"
+        "sky_sphere { pigment { gradient y color_map {\n"
+        "  [0.0 rgb <0.75,0.85,0.95>][0.25 rgb <0.45,0.65,0.92>][1.0 rgb <0.15,0.35,0.80>] }\n"
+        "  scale 2 translate y*-0.2 } }\n"
+        "light_source { <-30,40,-25> rgb <1.0,0.97,0.88> }\n"
+        "light_source { <20,25,30> rgb <0.3,0.35,0.45> shadowless }\n"
+        "plane { y,0 texture { pigment { granite color_map {\n"
+        "  [0 rgb <0.18,0.42,0.14>][0.6 rgb <0.26,0.55,0.18>][1 rgb <0.34,0.62,0.24>] } scale 3 }\n"
+        "  normal { bumps 0.35 scale 0.4 } finish { ambient 0.4 diffuse 0.7 } } }\n";
+    card_text(s, big, 1.42f, 3.4f, 0,
+              style == CARD_GOLD ? "1.0,0.82,0.25" : "0.85,0.25,0.20", 7.2f);
+    card_text(s, sub, 0.55f, 2.5f, 0, "0.95,0.93,0.85", 6.6f);
+    if (style == CARD_GOLD) {
+        // Chunkins + the spinning Golden Acorn (splash lineage)
+        s +=
+            "#declare FUR = pigment { rgb <0.55,0.32,0.15> };\n"
+            "#declare CREAM = pigment { rgb <0.93,0.85,0.70> };\n"
+            "#declare DARK = pigment { rgb <0.10,0.07,0.05> };\n"
+            "union {\n"
+            "  sphere { 0, 0.48 scale <0.9,1.0,0.85> translate <0,0.95,0> pigment {FUR} finish { phong 0.6 } }\n"
+            "  sphere { <0,1.62,0.10>, 0.30 pigment {FUR} finish { phong 0.6 } }\n"
+            "  sphere { 0, 0.13 scale <1,0.8,1.1> translate <0,1.54,0.36> pigment {CREAM} }\n"
+            "  sphere { <-0.12,1.70,0.30>, 0.05 pigment {DARK} }\n"
+            "  sphere { < 0.12,1.70,0.30>, 0.05 pigment {DARK} }\n"
+            "  sphere { 0, 0.09 scale <0.8,1.3,0.6> translate <-0.15,1.90,0.04> pigment {FUR} }\n"
+            "  sphere { 0, 0.09 scale <0.8,1.3,0.6> translate < 0.15,1.90,0.04> pigment {FUR} }\n"
+            "  box { <-0.09,-0.55,-0.09>,<0.09,0,0.09> translate <-0.17,0.55,0> pigment {FUR} }\n"
+            "  box { <-0.09,-0.55,-0.09>,<0.09,0,0.09> translate < 0.17,0.55,0> pigment {FUR} }\n"
+            "  union { sphere { <0.16,0.76,-0.55>, 0.23 } sphere { <0.18,1.12,-0.54>, 0.26 }\n"
+            "    sphere { <0.14,1.44,-0.40>, 0.20 } pigment { rgb <0.62,0.34,0.14> } }\n"
+            "  rotate y*168 translate <-3.4, 0, -0.6> scale 1.1 }\n"
+            "union {\n"
+            "  sphere { 0, 0.20 scale <1,1.15,1> translate <0,0.20,0>\n"
+            "    pigment { rgb <1.00,0.84,0.25> } finish { phong 0.9 reflection 0.10 } }\n"
+            "  sphere { 0, 0.21 scale <1,0.55,1> translate <0,0.36,0>\n"
+            "    pigment { rgb <0.42,0.26,0.12> } finish { phong 0.5 } }\n"
+            "  cylinder { <0,0.44,0>, <0,0.56,0>, 0.035 pigment { rgb <0.38,0.23,0.10> } }\n"
+            "  scale 3.4 rotate y*SPIN translate <3.4, 0.1, -0.4> }\n";
+    } else {
+        // the smug baddie, front and center, slowly turning
+        s +=
+            "union {\n"
+            "  sphere { 0, 0.34 scale <1.05,0.80,1.30> translate <0,0.34,0>\n"
+            "    pigment { rgb <0.28,0.24,0.30> } finish { phong 0.5 } }\n"
+            "  sphere { 0, 0.21 translate <0,0.58,0.34> pigment { rgb <0.30,0.26,0.32> } }\n"
+            "  cone { <0,0.55,0.46>, 0.10, <0,0.52,0.68>, 0 pigment { rgb <0.22,0.19,0.24> } }\n"
+            "  cone { <-0.12,0.74,0.26>, 0.07, <-0.14,0.94,0.24>, 0 pigment { rgb <0.26,0.22,0.28> } }\n"
+            "  cone { < 0.12,0.74,0.26>, 0.07, < 0.14,0.94,0.24>, 0 pigment { rgb <0.26,0.22,0.28> } }\n"
+            "  sphere { <-0.09,0.64,0.50>, 0.035 pigment { rgb <1.0,0.85,0.25> } finish { ambient 0.9 } }\n"
+            "  sphere { < 0.09,0.64,0.50>, 0.035 pigment { rgb <1.0,0.85,0.25> } finish { ambient 0.9 } }\n"
+            "  cone { <0,0.40,-0.30>, 0.09, <0,0.55,-0.85>, 0 pigment { rgb <0.24,0.20,0.26> } }\n"
+            "  scale 2.6 rotate y*SPIN translate <0, 0.1, -1.5> }\n";
+    }
+    s += "camera { location <0, 2.6, -9.5> look_at <0, 2.1, 0> angle 50 right x*16/9 up y }\n";
+    return s;
 }
 
 // ====================== scene recipe (generated) =============================
@@ -946,6 +1036,54 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
     double prev = now_s(), acc = 0, simt = 0, fpsT = prev, win_at = -1;
     int fpsN = 0, rc_out = 0;
 
+    // ---- card machinery: send a card scene, spin it, wait for key/timeout --
+    // returns 1 if the player asked to QUIT (ESC / window close), else 0
+    auto show_card = [&](const std::string& card, double auto_dismiss_s) -> int {
+        if (!r.scene(card)) return 0;            // cards are best-effort
+        double t0 = now_s();
+        for (;;) {
+            SDL_Event e;
+            while (SDL_PollEvent(&e)) {
+                if (e.type == SDL_QUIT) return 1;
+                if (e.type == SDL_KEYDOWN && !e.key.repeat)
+                    return e.key.keysym.sym == SDLK_ESCAPE ? 1 : 0;
+            }
+            if (auto_dismiss_s > 0 && now_s() - t0 >= auto_dismiss_s) return 0;
+            std::vector<Declare> sd = { {"SPIN", (float)((now_s() - t0) * 24.0)} };
+            if (!r.render(rW, rH, sd)) return 0;
+            if (r.frame_fits(rW, rH)) {
+                if (gpu && g_gpu.frame(r.fb.data(), 0.6f, 32, gpu_out.data()) == 0)
+                    SDL_UpdateTexture(tex, NULL, gpu_out.data(), winW * 4);
+                else if (!gpu)
+                    SDL_UpdateTexture(tex, NULL, r.fb.data(), rW * 4);
+                SDL_RenderClear(ren);
+                SDL_RenderCopy(ren, tex, NULL, NULL);
+                SDL_RenderPresent(ren);
+            }
+        }
+    };
+    // restore the live world after any card + keep the clocks honest
+    auto back_to_world = [&]() -> bool {
+        if (!r.scene(build_scene())) {
+            fprintf(stderr, "fd-game: FATAL: world scene rejected after card\n");
+            exit(1);
+        }
+        if (g_gpu.active && g_gpu.reset) g_gpu.reset();
+        prev = now_s(); acc = 0;
+        return true;
+    };
+    // the level card: "WORLD N" + the level's name (auto-dismisses)
+    auto level_card = [&]() -> int {
+        char big[32], sub[80];
+        const char* name = strchr(g_title, ':');
+        if (name) { name++; while (*name == ' ') name++; }   // safe past ':'
+        snprintf(sub, sizeof sub, "%s", name ? name : "");
+        if (g_hud.world > 0) snprintf(big, sizeof big, "WORLD %d", g_hud.world);
+        else snprintf(big, sizeof big, "%s", (name && *name) ? "ONWARD!" : g_title);
+        int q = show_card(build_card_scene(big, sub, CARD_GOLD), 2.2);
+        return back_to_world(), q;
+    };
+
     // ---- splash screen: the raytraced title card (any key starts) ----------
     if (!getenv("FD_NOSPLASH")) {
         // cwd first (matches how level scripts load), exe-dir as fallback so
@@ -969,40 +1107,11 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
             while ((got = fread(chunk, 1, sizeof chunk, sf)) > 0)
                 splash.append(chunk, got);
             fclose(sf);
-            if (r.scene(splash)) {
-                SDL_SetWindowTitle(win, "CHUNKINS — The Search for the Golden Acorn");
-                double t0 = now_s();
-                bool in_splash = true;
-                while (in_splash && running) {
-                    SDL_Event e;
-                    while (SDL_PollEvent(&e)) {
-                        if (e.type == SDL_QUIT) { running = false; }
-                        else if (e.type == SDL_KEYDOWN && !e.key.repeat) {
-                            if (e.key.keysym.sym == SDLK_ESCAPE) running = false;
-                            else in_splash = false;          // any key starts
-                        }
-                    }
-                    std::vector<Declare> sd = { {"SPIN", (float)((now_s() - t0) * 24.0)} };
-                    if (!r.render(rW, rH, sd)) break;        // splash is best-effort
-                    if (r.frame_fits(rW, rH)) {
-                        if (gpu && g_gpu.frame(r.fb.data(), 0.6f, 32, gpu_out.data()) == 0)
-                            SDL_UpdateTexture(tex, NULL, gpu_out.data(), winW * 4);
-                        else if (!gpu)
-                            SDL_UpdateTexture(tex, NULL, r.fb.data(), rW * 4);
-                        SDL_RenderClear(ren);
-                        SDL_RenderCopy(ren, tex, NULL, NULL);
-                        SDL_RenderPresent(ren);
-                    }
-                }
-            } else fprintf(stderr, "fd-game: splash scene rejected — skipping\n");
+            SDL_SetWindowTitle(win, "CHUNKINS — The Search for the Golden Acorn");
+            if (show_card(splash, 0)) running = false;       // wait for any key
         }
-        // back to the actual world (also restores reconnect state)
-        if (running && !r.scene(build_scene())) {
-            fprintf(stderr, "fd-game: FATAL: world scene rejected after splash\n");
-            exit(1);
-        }
-        if (g_gpu.active && g_gpu.reset) g_gpu.reset();
-        prev = now_s();                          // don't count splash as a hitch
+        if (running && level_card()) running = false;        // "WORLD 1 ..." card
+        if (running) back_to_world();
     }
     printf("fd-game: WASD/arrows move+turn, SPACE jump (retry when lost), "
            "1-%zu pick a world, ESC quit\n", g_worlds.empty() ? 9 : g_worlds.size());
@@ -1031,7 +1140,7 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
                     if (w < g_worlds.size() &&
                         switch_level(r, p, g_worlds[w].c_str())) {
                         win_at = -1;
-                        if (g_gpu.active && g_gpu.reset) g_gpu.reset();
+                        if (level_card()) running = false;
                     }
                 }
             }
@@ -1043,11 +1152,52 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
         if (k[SDL_SCANCODE_LEFT]  || k[SDL_SCANCODE_A]) in.turn -= 1;
         if (k[SDL_SCANCODE_RIGHT] || k[SDL_SCANCODE_D]) in.turn += 1;
 
-        if (maybe_advance(r, p, simt, &win_at) && g_gpu.active && g_gpu.reset)
-            g_gpu.reset();                       // new world, fresh GPU history
+        if (maybe_advance(r, p, simt, &win_at)) {
+            if (level_card()) running = false;   // "WORLD N" + fresh GPU history
+        }
         script_tick(simt, ft, p);
         // evaluate AFTER the tick: a state change this frame freezes this frame
         bool over = strcmp(g_hud.state, "playing") != 0;
+
+        // GAME OVER card: a beat after the bonk so the red tint reads, then
+        // the smug baddie card waits for any key -> retry this level
+        static double lost_at = -1;
+        if (strcmp(g_hud.state, "lost") == 0) {
+            if (lost_at < 0) lost_at = simt;
+            else if (simt - lost_at > 1.0) {
+                lost_at = -1;
+                if (show_card(build_card_scene("GAME OVER",
+                        "Press any key to try again", CARD_DARK), 0)) {
+                    running = false;
+                } else if (switch_level(r, p, g_current)) {
+                    win_at = -1;
+                    back_to_world();
+                }
+                continue;
+            }
+        } else lost_at = -1;
+
+        // QUEST COMPLETE card: final world won (no next_level to chain to)
+        static double done_at = -1;
+        if (strcmp(g_hud.state, "won") == 0 && !g_next[0]) {
+            if (done_at < 0) done_at = simt;
+            else if (simt - done_at > WIN_LINGER_S) {
+                done_at = -1;
+                char sub[96];
+                snprintf(sub, sizeof sub, "Chunkins found the Golden Acorn!");
+                if (show_card(build_card_scene("QUEST COMPLETE!", sub, CARD_GOLD), 0)) {
+                    running = false;
+                } else {
+                    const char* home = g_worlds.empty() ? g_current
+                                                        : g_worlds[0].c_str();
+                    if (switch_level(r, p, home)) {
+                        win_at = -1;
+                        if (level_card()) running = false;
+                    }
+                }
+                continue;
+            }
+        } else done_at = -1;
         while (acc >= dt) {
             in.jump = jump_pending; jump_pending = false;   // consumed by one step only
             if (!over) simulate(p, in, dt);                 // end screen: world freezes
