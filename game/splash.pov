@@ -65,10 +65,15 @@ union {
   sphere { <0,1.62,0.10>, 0.30 pigment {FUR} finish { phong 0.6 } }
   sphere { 0, 0.13 scale <1,0.8,1.1> translate <0,1.54,0.36> pigment {CREAM} finish { phong 0.5 } }
   sphere { <0,1.57,0.47>, 0.045 pigment {DARK} }
-  sphere { <-0.12,1.70,0.30>, 0.05 pigment {DARK} }
-  sphere { < 0.12,1.70,0.30>, 0.05 pigment {DARK} }
+  sphere { <-0.12,1.72,0.305>, 0.068 pigment { rgb <0.97,0.97,0.95> } finish { phong 0.9 } }
+  sphere { < 0.12,1.72,0.305>, 0.068 pigment { rgb <0.97,0.97,0.95> } finish { phong 0.9 } }
+  sphere { <-0.115,1.72,0.355>, 0.034 pigment {DARK} }
+  sphere { < 0.115,1.72,0.355>, 0.034 pigment {DARK} }
   sphere { 0, 0.09 scale <0.8,1.3,0.6> translate <-0.15,1.90,0.04> pigment {FUR} }
   sphere { 0, 0.09 scale <0.8,1.3,0.6> translate < 0.15,1.90,0.04> pigment {FUR} }
+  // little front paws, held up in the classic nibble pose
+  sphere { <-0.21,0.82,0.30>, 0.095 pigment {FUR} finish { phong 0.5 } }
+  sphere { < 0.21,0.82,0.30>, 0.095 pigment {FUR} finish { phong 0.5 } }
   box { <-0.09,-0.55,-0.09>,<0.09,0,0.09> translate <-0.17,0.55,0> pigment {FUR} finish { phong 0.5 } }
   box { <-0.09,-0.55,-0.09>,<0.09,0,0.09> translate < 0.17,0.55,0> pigment {FUR} finish { phong 0.5 } }
   union {
