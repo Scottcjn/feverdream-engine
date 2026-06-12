@@ -220,7 +220,8 @@ private:
 };
 
 // ============================ world + tuning =================================
-enum BoxShape { SHAPE_BOX = 0, SHAPE_ACORN, SHAPE_BADDIE };
+enum BoxShape { SHAPE_BOX = 0, SHAPE_ACORN, SHAPE_BADDIE,
+                SHAPE_HEART, SHAPE_STAR, SHAPE_CHOMP };
 struct Aabb { float cx, cz, hx, hz, h; bool dyn; float r, g; float cy; bool solid;
               int shape;       // BoxShape — "acorn"/"baddie" in the script
               float ry; };     // facing (deg), baddies only — script-driven
@@ -231,6 +232,9 @@ static float P_RADIUS = 0.45f;
 static float SIM_HZ = 120.0f;
 static float SPEED = 4.2f, TURN_RATE = 2.6f, STEP_RATE = 11.0f;
 static float GRAV = -28.0f, JUMP_V = 9.5f;
+// power-up channels: scripts publish speed_mult/jump_mult each tick (a star
+// power, say); missing/expired = 1.0. Lua owns the duration logic.
+static float g_speed_mult = 1.0f, g_jump_mult = 1.0f;
 
 // built-in world, used when no script is present (mirrors the original arena)
 static void default_world() {
@@ -248,7 +252,21 @@ static void default_world() {
 static float STEP_UP   = 0.35f;   // max ledge you walk up (config.step_up)
 static float HEAD_ROOM = 1.8f;    // boxes above this are overhead (config.head_room)
 
-// circle-vs-AABB push-out in XZ at a given feet height; true if pushed
+// world -> box-local XZ. Matches the renderer exactly: POV `rotate y*ry` maps
+// local +Z to world (sin ry, cos ry) — proven by the character's snout facing
+// his movement — so collision inverts that matrix and rotating platforms
+// collide exactly where they're DRAWN.
+static inline void to_local(const Aabb& b, float wx, float wz, float* lx, float* lz) {
+    wx -= b.cx; wz -= b.cz;
+    if (b.ry != 0) {
+        float a = b.ry * (float)M_PI / 180.0f, c = cosf(a), s = sinf(a);
+        *lx = wx * c - wz * s;
+        *lz = wx * s + wz * c;
+    } else { *lx = wx; *lz = wz; }
+}
+
+// circle-vs-box push-out in XZ at a given feet height; true if pushed.
+// Yaw-rotated boxes (rotating platforms) are handled via the local frame.
 static bool collide(float* px, float* pz, float feet) {
     bool pushed = false;
     for (const Aabb& b : g_world) {
@@ -256,18 +274,25 @@ static bool collide(float* px, float* pz, float feet) {
         if (b.cy + b.h < 0.1f) continue;             // sunken below the floor
         if (b.cy + b.h <= feet + STEP_UP) continue;  // floor at this altitude
         if (b.cy >= feet + HEAD_ROOM) continue;      // overhead — walk under
-        float nx = fmaxf(b.cx - b.hx, fminf(*px, b.cx + b.hx));
-        float nz = fmaxf(b.cz - b.hz, fminf(*pz, b.cz + b.hz));
-        float dx = *px - nx, dz = *pz - nz;
+        float lx, lz;
+        to_local(b, *px, *pz, &lx, &lz);
+        float nx = fmaxf(-b.hx, fminf(lx, b.hx));
+        float nz = fmaxf(-b.hz, fminf(lz, b.hz));
+        float dx = lx - nx, dz = lz - nz;
         float d2 = dx * dx + dz * dz;
         if (d2 >= P_RADIUS * P_RADIUS) continue;
         pushed = true;
         if (d2 > 1e-9f) {
-            float d = sqrtf(d2), s = (P_RADIUS - d) / d;
-            *px += dx * s; *pz += dz * s;
+            float s = (P_RADIUS - sqrtf(d2)) / sqrtf(d2);
+            dx *= s; dz *= s;                        // push-out, LOCAL frame
         } else {
-            *px = b.cx + b.hx + P_RADIUS;
+            dx = b.hx + P_RADIUS - lx; dz = 0;       // center inside: pop +local-x
         }
+        if (b.ry != 0) {                             // local push -> world
+            float a = b.ry * (float)M_PI / 180.0f, c = cosf(a), s2 = sinf(a);
+            *px += dx * c + dz * s2;
+            *pz += -dx * s2 + dz * c;
+        } else { *px += dx; *pz += dz; }
     }
     return pushed;
 }
@@ -282,8 +307,10 @@ static float ground_height(float px, float pz, float feet, float tol) {
         float top = b.cy + b.h;
         if (top > feet + tol) continue;              // too high to stand on
         float reach = P_RADIUS * 0.7f;               // forgiving ledge grab
-        if (px > b.cx - b.hx - reach && px < b.cx + b.hx + reach &&
-            pz > b.cz - b.hz - reach && pz < b.cz + b.hz + reach)
+        float lx, lz;
+        to_local(b, px, pz, &lx, &lz);
+        if (lx > -b.hx - reach && lx < b.hx + reach &&
+            lz > -b.hz - reach && lz < b.hz + reach)
             g = fmaxf(g, top);
     }
     return g;
@@ -376,6 +403,9 @@ static bool load_script(const char* path) {
                 const char* sh = lua_tostring(g_L, -1);
                 if (strcmp(sh, "acorn") == 0)  b.shape = SHAPE_ACORN;
                 if (strcmp(sh, "baddie") == 0) b.shape = SHAPE_BADDIE;
+                if (strcmp(sh, "heart") == 0)  b.shape = SHAPE_HEART;
+                if (strcmp(sh, "star") == 0)   b.shape = SHAPE_STAR;
+                if (strcmp(sh, "chomp") == 0)  b.shape = SHAPE_CHOMP;
             }
             lua_pop(g_L, 1);
             b.ry = lua_field_num(g_L, "ry", 0);
@@ -495,6 +525,14 @@ static void script_tick(double t, double dt, Player& p) {
         p.grounded = false;
         lua_pushnil(g_L); lua_setglobal(g_L, "bounce");
     }
+    lua_pop(g_L, 1);
+
+    // power-up channels (default 1.0 when the script doesn't publish them)
+    lua_getglobal(g_L, "speed_mult");
+    g_speed_mult = lua_isnumber(g_L, -1) ? (float)lua_tonumber(g_L, -1) : 1.0f;
+    lua_pop(g_L, 1);
+    lua_getglobal(g_L, "jump_mult");
+    g_jump_mult = lua_isnumber(g_L, -1) ? (float)lua_tonumber(g_L, -1) : 1.0f;
     lua_pop(g_L, 1);
 
     // game state for the HUD: game_score, game_lives, game_state
@@ -703,6 +741,86 @@ static std::string build_scene() {
                 0.09f*s, 0.64f*s, 0.50f*s, 0.035f*s,           // eye R
                 0.30f*s, 0.40f*s, 0.09f*s, 0.55f*s, 0.85f*s,   // tail
                 i, i, i, i);
+        } else if (b.dyn && b.shape == SHAPE_HEART) {
+            // health pickup: two lobes + a diamond point, glossy red
+            float s = b.h / 0.5f;
+            n = snprintf(buf, sizeof buf,
+                "#ifndef (BOX%zuX) #declare BOX%zuX=%.2f; #end\n"
+                "#ifndef (BOX%zuY) #declare BOX%zuY=%.2f; #end\n"
+                "#ifndef (BOX%zuZ) #declare BOX%zuZ=%.2f; #end\n"
+                "union {\n"
+                "  sphere { <-%.2f,%.2f,0>, %.2f }\n"
+                "  sphere { < %.2f,%.2f,0>, %.2f }\n"
+                "  box { <-%.2f,-%.2f,-%.3f>,<%.2f,%.2f,%.3f> rotate z*45 translate <0,%.2f,0> }\n"
+                "  pigment { rgb <0.92,0.15,0.20> } finish { phong 0.9 reflection 0.08 }\n"
+                "  translate <BOX%zuX,BOX%zuY,BOX%zuZ> }\n",
+                i, i, b.cx, i, i, b.cy, i, i, b.cz,
+                0.105f*s, 0.34f*s, 0.115f*s,
+                0.105f*s, 0.34f*s, 0.115f*s,
+                0.13f*s, 0.13f*s, 0.055f*s, 0.13f*s, 0.13f*s, 0.055f*s, 0.215f*s,
+                i, i, i);
+        } else if (b.dyn && b.shape == SHAPE_STAR) {
+            // power star: glowing core + six gold spikes, spins via BOX<i>R
+            float s = b.h / 0.5f;
+            n = snprintf(buf, sizeof buf,
+                "#ifndef (BOX%zuX) #declare BOX%zuX=%.2f; #end\n"
+                "#ifndef (BOX%zuY) #declare BOX%zuY=%.2f; #end\n"
+                "#ifndef (BOX%zuZ) #declare BOX%zuZ=%.2f; #end\n"
+                "#ifndef (BOX%zuR) #declare BOX%zuR=0; #end\n"
+                "union {\n"
+                "  sphere { <0,%.2f,0>, %.2f }\n"
+                "  cone { <0,%.2f,0>, %.2f, <0,%.2f,0>, 0 }\n"
+                "  cone { <0,%.2f,0>, %.2f, <0,%.2f,0>, 0 }\n"
+                "  cone { <0,%.2f,0>, %.2f, <%.2f,%.2f,0>, 0 }\n"
+                "  cone { <0,%.2f,0>, %.2f, <-%.2f,%.2f,0>, 0 }\n"
+                "  cone { <0,%.2f,0>, %.2f, <0,%.2f,%.2f>, 0 }\n"
+                "  cone { <0,%.2f,0>, %.2f, <0,%.2f,-%.2f>, 0 }\n"
+                "  pigment { rgb <1.0,0.86,0.20> } finish { phong 1.0 ambient 0.55 }\n"
+                "  rotate y*BOX%zuR translate <BOX%zuX,BOX%zuY,BOX%zuZ> }\n",
+                i, i, b.cx, i, i, b.cy, i, i, b.cz, i, i,
+                0.30f*s, 0.135f*s,
+                0.30f*s, 0.075f*s, 0.62f*s,
+                0.30f*s, 0.075f*s, 0.02f*s,
+                0.30f*s, 0.075f*s, 0.30f*s, 0.30f*s,
+                0.30f*s, 0.075f*s, 0.30f*s, 0.30f*s,
+                0.30f*s, 0.075f*s, 0.30f*s, 0.30f*s,
+                0.30f*s, 0.075f*s, 0.30f*s, 0.30f*s,
+                i, i, i, i);
+        } else if (b.dyn && b.shape == SHAPE_CHOMP) {
+            // the leashed dog: big dark head, eager eyes, TEETH, chain links
+            // trailing behind its facing (the post is back that way)
+            float s = b.h / 0.9f;
+            n = snprintf(buf, sizeof buf,
+                "#ifndef (BOX%zuX) #declare BOX%zuX=%.2f; #end\n"
+                "#ifndef (BOX%zuY) #declare BOX%zuY=%.2f; #end\n"
+                "#ifndef (BOX%zuZ) #declare BOX%zuZ=%.2f; #end\n"
+                "#ifndef (BOX%zuR) #declare BOX%zuR=0; #end\n"
+                "union {\n"
+                "  sphere { <0,%.2f,0>, %.2f pigment { rgb <0.13,0.13,0.18> } finish { phong 0.9 reflection 0.12 } }\n"
+                "  sphere { <-%.2f,%.2f,%.2f>, %.2f pigment { rgb <0.95,0.95,0.92> } }\n"
+                "  sphere { < %.2f,%.2f,%.2f>, %.2f pigment { rgb <0.95,0.95,0.92> } }\n"
+                "  sphere { <-%.2f,%.2f,%.2f>, %.3f pigment { rgb <0.05,0.05,0.06> } }\n"
+                "  sphere { < %.2f,%.2f,%.2f>, %.3f pigment { rgb <0.05,0.05,0.06> } }\n"
+                "  cone { <-%.2f,%.2f,%.2f>, %.2f, <-%.2f,%.2f,%.2f>, 0 pigment { rgb <0.96,0.96,0.93> } }\n"
+                "  cone { <0,%.2f,%.2f>, %.2f, <0,%.2f,%.2f>, 0 pigment { rgb <0.96,0.96,0.93> } }\n"
+                "  cone { <%.2f,%.2f,%.2f>, %.2f, <%.2f,%.2f,%.2f>, 0 pigment { rgb <0.96,0.96,0.93> } }\n"
+                "  sphere { <0,%.2f,-%.2f>, %.2f pigment { rgb <0.25,0.25,0.30> } finish { phong 0.8 } }\n"
+                "  sphere { <0,%.2f,-%.2f>, %.2f pigment { rgb <0.25,0.25,0.30> } finish { phong 0.8 } }\n"
+                "  sphere { <0,%.2f,-%.2f>, %.2f pigment { rgb <0.25,0.25,0.30> } finish { phong 0.8 } }\n"
+                "  rotate y*BOX%zuR translate <BOX%zuX,BOX%zuY,BOX%zuZ> }\n",
+                i, i, b.cx, i, i, b.cy, i, i, b.cz, i, i,
+                0.45f*s, 0.42f*s,
+                0.16f*s, 0.62f*s, 0.34f*s, 0.085f*s,
+                0.16f*s, 0.62f*s, 0.34f*s, 0.085f*s,
+                0.155f*s, 0.62f*s, 0.41f*s, 0.038f*s,
+                0.155f*s, 0.62f*s, 0.41f*s, 0.038f*s,
+                0.17f*s, 0.30f*s, 0.36f*s, 0.05f*s, 0.17f*s, 0.16f*s, 0.40f*s,
+                0.30f*s, 0.40f*s, 0.05f*s, 0.16f*s, 0.44f*s,
+                0.17f*s, 0.30f*s, 0.36f*s, 0.05f*s, 0.17f*s, 0.16f*s, 0.40f*s,
+                0.22f*s, 0.52f*s, 0.07f*s,
+                0.16f*s, 0.74f*s, 0.07f*s,
+                0.10f*s, 0.96f*s, 0.07f*s,
+                i, i, i, i);
         } else if (b.dyn && b.shape == SHAPE_ACORN) {
             // shape="acorn": nut, cap, stem — sized from the box height
             float s = b.h / 0.5f;
@@ -725,14 +843,18 @@ static std::string build_scene() {
                 0.44f * s, 0.56f * s, 0.035f * s,
                 i, i, i);
         } else if (b.dyn) {
+            // dyn solid box: a moving/ROTATING platform — yaw via BOX<i>R,
+            // exactly matching the rotated-collision local frame
             n = snprintf(buf, sizeof buf,
                 "#ifndef (BOX%zuX) #declare BOX%zuX=%.2f; #end\n"
                 "#ifndef (BOX%zuY) #declare BOX%zuY=%.2f; #end\n"
                 "#ifndef (BOX%zuZ) #declare BOX%zuZ=%.2f; #end\n"
+                "#ifndef (BOX%zuR) #declare BOX%zuR=0; #end\n"
                 "box { <%.2f,0,%.2f>, <%.2f,%.2f,%.2f> pigment { rgb <%.2f,%.2f,0.30> }"
-                " finish { phong 0.7 reflection 0.08 } translate <BOX%zuX,BOX%zuY,BOX%zuZ> }\n",
-                i, i, b.cx, i, i, b.cy, i, i, b.cz,
-                -b.hx, -b.hz, b.hx, b.h, b.hz, b.r, b.g, i, i, i);
+                " finish { phong 0.7 reflection 0.08 }"
+                " rotate y*BOX%zuR translate <BOX%zuX,BOX%zuY,BOX%zuZ> }\n",
+                i, i, b.cx, i, i, b.cy, i, i, b.cz, i, i,
+                -b.hx, -b.hz, b.hx, b.h, b.hz, b.r, b.g, i, i, i, i);
         } else {
             n = snprintf(buf, sizeof buf,
                 "box { <%.2f,%.2f,%.2f>, <%.2f,%.2f,%.2f> pigment { rgb <%.2f,%.2f,0.30> }"
@@ -810,8 +932,8 @@ static void simulate(Player& p, const Input& in, float dt) {
         if (p.grounded && (long)floorf(prev_step / (float)M_PI) !=
                           (long)floorf(p.step / (float)M_PI))
             g_audio.play(FdAudio::STEP, 0.6f);
-        p.x += sinf(p.yaw) * in.move * SPEED * dt;
-        p.z += cosf(p.yaw) * in.move * SPEED * dt;
+        p.x += sinf(p.yaw) * in.move * SPEED * g_speed_mult * dt;
+        p.z += cosf(p.yaw) * in.move * SPEED * g_speed_mult * dt;
     }
     // always collide: dynamic boxes can move INTO the player. Bump audio only
     // when the player is driving into geometry, rate-limited by the cooldown.
@@ -822,7 +944,7 @@ static void simulate(Player& p, const Input& in, float dt) {
         bump_cool = 0.25f;
     }
     if (in.jump && p.grounded) {
-        p.jv = JUMP_V; p.grounded = false;
+        p.jv = JUMP_V * g_jump_mult; p.grounded = false;
         g_audio.play(FdAudio::JUMP);
     }
     if (p.grounded) {
@@ -853,13 +975,17 @@ static std::vector<Declare> declares_for(const Player& p) {
     std::vector<Declare> d = {
         {"POSX", p.x}, {"POSZ", p.z}, {"JUMP", p.jy},
         {"TURN", p.yaw * 57.29578f}, {"STEP", p.step} };
-    char nm[16];
+    char nm[24];
     for (size_t i = 0; i < g_world.size(); ++i) {
         if (!g_world[i].dyn) continue;
         snprintf(nm, sizeof nm, "BOX%zuX", i); d.push_back({nm, g_world[i].cx});
         snprintf(nm, sizeof nm, "BOX%zuY", i); d.push_back({nm, g_world[i].cy});
         snprintf(nm, sizeof nm, "BOX%zuZ", i); d.push_back({nm, g_world[i].cz});
-        if (g_world[i].shape == SHAPE_BADDIE) {
+        // anything that can rotate streams its yaw: baddies/chomps face their
+        // prey, stars spin, and dyn SOLID boxes are rotating platforms
+        if (g_world[i].shape == SHAPE_BADDIE || g_world[i].shape == SHAPE_CHOMP ||
+            g_world[i].shape == SHAPE_STAR ||
+            (g_world[i].shape == SHAPE_BOX && g_world[i].solid)) {
             snprintf(nm, sizeof nm, "BOX%zuR", i); d.push_back({nm, g_world[i].ry});
         }
     }
@@ -1085,7 +1211,7 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
     };
     // the level card: "WORLD N" + the level's name (auto-dismisses)
     auto level_card = [&]() -> int {
-        char big[32], sub[80];
+        char big[72], sub[80];
         const char* name = strchr(g_title, ':');
         if (name) { name++; while (*name == ' ') name++; }   // safe past ':'
         snprintf(sub, sizeof sub, "%s", name ? name : "");

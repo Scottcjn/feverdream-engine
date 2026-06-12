@@ -8,7 +8,7 @@
 -- the den roof gleams the REAL Golden Acorn. Good luck, little squirrel.
 
 game_title = "Golden Acorn 4: Thief's Hollow"
--- no next_level: this is the true end of the quest
+next_level = "chunkins5.lua"   -- one more meadow: the windmill pass
 
 config = {
   speed = 5.0, turn_rate = 3.0, step_rate = 12.0,

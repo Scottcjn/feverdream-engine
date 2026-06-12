@@ -23,6 +23,7 @@ run "RELIC SWEEP logic (gametest)"           ./fd-game --gametest 180 "$SOCK" re
 run "CRATE CLIMB platforming (gametest)"     ./fd-game --gametest 240 "$SOCK" crate_climb.lua
 run "GOLDEN ACORN level 1 (gametest)"        ./fd-game --gametest 240 "$SOCK" chunkins1.lua
 run "GOLDEN ACORN world 4 (gametest)"        ./fd-game --gametest 240 "$SOCK" chunkins4.lua
+run "WINDMILL PASS world 5 (gametest)"       ./fd-game --gametest 240 "$SOCK" chunkins5.lua
 
 echo "=== level-chain transition (test_win1 -> test_win2)"
 CHAIN=$(SDL_AUDIODRIVER=dummy ./fd-game --gametest 300 "$SOCK" test_win1.lua)
