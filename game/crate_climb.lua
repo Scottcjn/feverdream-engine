@@ -18,11 +18,11 @@ config = {
 }
 
 boxes = {
-  -- yard walls
-  { cx =   0, cz =  14, hx = 14.6, hz = 0.6, h = 2.2, r = 0.50, g = 0.42 },
-  { cx =   0, cz = -14, hx = 14.6, hz = 0.6, h = 2.2, r = 0.50, g = 0.42 },
-  { cx =  14, cz =   0, hx = 0.6, hz = 13.4, h = 2.2, r = 0.50, g = 0.42 },
-  { cx = -14, cz =   0, hx = 0.6, hz = 13.4, h = 2.2, r = 0.50, g = 0.42 },
+  -- low green hedges: keep Chunkins in, let the forest show over the top
+  { cx =   0, cz =  14, hx = 14.6, hz = 0.6, h = 1.0, r = 0.20, g = 0.48 },
+  { cx =   0, cz = -14, hx = 14.6, hz = 0.6, h = 1.0, r = 0.20, g = 0.48 },
+  { cx =  14, cz =   0, hx = 0.6, hz = 13.4, h = 1.0, r = 0.20, g = 0.48 },
+  { cx = -14, cz =   0, hx = 0.6, hz = 13.4, h = 1.0, r = 0.20, g = 0.48 },
 
   -- the crate staircase: walk up the first (step-height), jump the rest
   { cx =  0,  cz =  4.0, hx = 1.1, hz = 1.1, h = 0.30, r = 0.72, g = 0.48 },
