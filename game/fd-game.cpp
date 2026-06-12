@@ -916,8 +916,16 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
     if (SDL_Init(SDL_INIT_VIDEO) != 0) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
     SDL_Window* win = SDL_CreateWindow(g_title,
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, winW, winH, SDL_WINDOW_SHOWN);
-    SDL_Renderer* ren = SDL_CreateRenderer(win, -1,
-        SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+    // NO PRESENTVSYNC: under XWayland, Mesa's DRI3 vsync wait
+    // (xcb_wait_for_special_event in loader_dri3_get_buffers) can block
+    // FOREVER when the compositor stops delivering present events (window
+    // occluded, screen blank, focus games) — captured live via gdb as the
+    // "Chunkins frozen" bug. The daemon's ~10ms renders pace the loop anyway.
+    // FD_VSYNC=1 opts back in for setups that want it.
+    Uint32 rflags = SDL_RENDERER_ACCELERATED;
+    const char* vs = getenv("FD_VSYNC");
+    if (vs && strcmp(vs, "1") == 0) rflags |= SDL_RENDERER_PRESENTVSYNC;
+    SDL_Renderer* ren = SDL_CreateRenderer(win, -1, rflags);
     int rW = winW / rdiv, rH = winH / rdiv;
     // GPU post path: accumulate + upscale + dither on the 4070; the texture
     // is then full window res. CPU path: stream internal res, SDL upscales.
