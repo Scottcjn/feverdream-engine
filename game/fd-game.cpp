@@ -1155,6 +1155,48 @@ static int gametest(FdRenderer& r, int frames) {
 // ============================ interactive (SDL2) =============================
 #include <SDL2/SDL.h>
 
+// pixel-art HUD stencils: each string row is a bitmap, drawn as scaled rects.
+// Hearts for lives, mini acorns for acorns — squares are for engines, not HUDs.
+static const char* HUD_HEART[] = {
+    ".XX.XX.",
+    "XXXXXXX",
+    "XXXXXXX",
+    ".XXXXX.",
+    "..XXX..",
+    "...X...",
+    NULL
+};
+static const char* HUD_ACORN_CAP[] = {     // dark brown: stem + cap
+    "...X...",
+    ".XXXXX.",
+    "XXXXXXX",
+    ".......",
+    ".......",
+    ".......",
+    NULL
+};
+static const char* HUD_ACORN_NUT[] = {     // gold: the nut
+    ".......",
+    ".......",
+    ".......",
+    ".XXXXX.",
+    ".XXXXX.",
+    "..XXX..",
+    NULL
+};
+
+static void draw_stencil(SDL_Renderer* ren, const char** rows,
+                         int x, int y, int px,
+                         Uint8 r, Uint8 g, Uint8 b, Uint8 a) {
+    SDL_SetRenderDrawColor(ren, r, g, b, a);
+    for (int row = 0; rows[row]; ++row)
+        for (int col = 0; rows[row][col]; ++col)
+            if (rows[row][col] == 'X') {
+                SDL_Rect dot = { x + col * px, y + row * px, px, px };
+                SDL_RenderFillRect(ren, &dot);
+            }
+}
+
 static int play(FdRenderer& r, int winW, int winH, int rdiv) {
     if (SDL_Init(SDL_INIT_VIDEO) != 0) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
     SDL_Window* win = SDL_CreateWindow(g_title,
@@ -1406,20 +1448,19 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
             SDL_RenderClear(ren);
             SDL_RenderCopy(ren, tex, NULL, NULL);
 
-            // HUD pips: score (gold, top-left), lives (red, top-right)
+            // HUD: mini acorns for score (top-left), hearts for lives
+            // (top-right), sky-blue world pips (bottom-left). px=3 => 21x18.
             SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
-            SDL_Rect pip;
             for (int s = 0; s < g_hud.score && s < 32; ++s) {
-                pip = { 16 + s * 26, 14, 18, 18 };
-                SDL_SetRenderDrawColor(ren, 240, 200, 60, 235);
-                SDL_RenderFillRect(ren, &pip);
+                int x = 14 + s * 26;
+                draw_stencil(ren, HUD_ACORN_CAP, x, 12, 3, 92, 58, 30, 245);
+                draw_stencil(ren, HUD_ACORN_NUT, x, 12, 3, 240, 195, 70, 245);
             }
             for (int l = 0; l < g_hud.lives && l < 32; ++l) {
-                pip = { winW - 34 - l * 26, 14, 18, 18 };
-                SDL_SetRenderDrawColor(ren, 220, 60, 60, 235);
-                SDL_RenderFillRect(ren, &pip);
+                draw_stencil(ren, HUD_HEART, winW - 36 - l * 26, 13, 3,
+                             225, 55, 65, 245);
             }
-            // world indicator: sky-blue pips, bottom-left (game_world from Lua)
+            SDL_Rect pip;
             for (int w = 0; w < g_hud.world && w < 16; ++w) {
                 pip = { 16 + w * 26, winH - 34, 18, 18 };
                 SDL_SetRenderDrawColor(ren, 90, 170, 235, 235);
