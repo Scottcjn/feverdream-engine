@@ -276,6 +276,9 @@ static float ground_height(float px, float pz, float feet, float tol) {
 static lua_State* g_L = NULL;
 static char g_title[64] = "fd-game";    // scripts override via game_title
 static char g_next[128] = "";           // scripts chain levels via next_level
+static char g_current[128] = "";        // the loaded script (for retry-on-loss)
+static std::vector<std::string> g_worlds;  // scripts publish a `worlds` list;
+                                           // keys 1-9 jump to them (session-wide)
 
 // play_sound("jump"|"land"|"step"|"bump"|"blip" [, gain]) — script audio hook
 static int l_play_sound(lua_State* L) {
@@ -375,6 +378,23 @@ static bool load_script(const char* path) {
     if (lua_isstring(g_L, -1))
         snprintf(g_next, sizeof g_next, "%s", lua_tostring(g_L, -1));
     lua_pop(g_L, 1);
+
+    // a `worlds` list (entry script usually) feeds the 1-9 world-select keys;
+    // it persists for the whole session so later levels inherit it
+    lua_getglobal(g_L, "worlds");
+    if (lua_istable(g_L, -1)) {
+        std::vector<std::string> w;
+        int nw = (int)luaL_len(g_L, -1);
+        for (int i = 1; i <= nw && i <= 9; ++i) {
+            lua_rawgeti(g_L, -1, i);
+            if (lua_isstring(g_L, -1)) w.push_back(lua_tostring(g_L, -1));
+            lua_pop(g_L, 1);
+        }
+        if (!w.empty()) g_worlds = w;
+    }
+    lua_pop(g_L, 1);
+
+    snprintf(g_current, sizeof g_current, "%s", path);
     return true;
 }
 
@@ -723,11 +743,33 @@ static double now_s() {
     return duration<double>(steady_clock::now().time_since_epoch()).count();
 }
 
-// level chain: after a win, when the script named a next_level, swap the
-// whole world live — fresh script, fresh player, new SCENE_FULL to the
-// daemon (it re-parses next frame; this is what the protocol was built for).
-// Returns true if a transition happened.
-static const double WIN_LINGER_S = 2.5;       // savor the gold tint first
+// swap the whole world live — fresh script, fresh player, new SCENE_FULL to
+// the daemon (it re-parses next frame; this is what the protocol was built
+// for). Used by the win chain, retry-on-loss, and the world-select keys.
+static bool switch_level(FdRenderer& r, Player& p, const char* path) {
+    char target[sizeof g_current];
+    snprintf(target, sizeof target, "%s", path);   // path may alias g_next/current
+    if (g_L) { lua_close(g_L); g_L = NULL; }
+    g_hud = GameHud();
+    if (!load_script(target)) {
+        fprintf(stderr, "fd-game: level %s failed to load\n", target);
+        default_world();
+    }
+    p = Player();
+    if (!r.scene(build_scene())) {
+        // old Lua state is gone and the daemon kept the previous scene —
+        // rendering on would mix worlds. A broken level is a build error:
+        // die loudly (same policy as scene-chunk truncation).
+        fprintf(stderr, "fd-game: FATAL: level '%s' scene rejected by daemon\n", target);
+        exit(1);
+    }
+    g_audio.play(FdAudio::BLIP, 1.2f);
+    printf("fd-game: now playing -> %s\n", g_title);
+    return true;
+}
+
+// the win chain: after the gold-tint linger, follow next_level
+static const double WIN_LINGER_S = 2.5;
 static bool maybe_advance(FdRenderer& r, Player& p, double simt, double* win_at) {
     if (strcmp(g_hud.state, "won") != 0 || !g_next[0]) {
         if (strcmp(g_hud.state, "won") != 0) *win_at = -1;
@@ -735,27 +777,8 @@ static bool maybe_advance(FdRenderer& r, Player& p, double simt, double* win_at)
     }
     if (*win_at < 0) { *win_at = simt; return false; }
     if (simt - *win_at < WIN_LINGER_S) return false;
-
-    char next[sizeof g_next];
-    snprintf(next, sizeof next, "%s", g_next);
-    if (g_L) { lua_close(g_L); g_L = NULL; }
-    g_hud = GameHud();
-    if (!load_script(next)) {
-        fprintf(stderr, "fd-game: next_level %s failed to load\n", next);
-        default_world();
-    }
-    p = Player();
     *win_at = -1;
-    if (!r.scene(build_scene())) {
-        // old Lua state is gone and the daemon kept the previous scene —
-        // rendering on would mix worlds. A broken level is a build error:
-        // die loudly (same policy as scene-chunk truncation).
-        fprintf(stderr, "fd-game: FATAL: next_level '%s' scene rejected by daemon\n", next);
-        exit(1);
-    }
-    g_audio.play(FdAudio::BLIP, 1.2f);
-    printf("fd-game: level up -> %s\n", g_title);
-    return true;
+    return switch_level(r, p, g_next);
 }
 
 // ============================ selftest (headless) ============================
@@ -885,8 +908,10 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
     Player p;
     const float dt = 1.0f / SIM_HZ;
     bool running = true, jump_pending = false;   // latched until a sim step consumes it
-    double prev = now_s(), acc = 0, simt = 0, fpsT = prev; int fpsN = 0;
-    printf("fd-game: WASD/arrows move+turn, SPACE jump, ESC quit\n");
+    double prev = now_s(), acc = 0, simt = 0, fpsT = prev, win_at = -1;
+    int fpsN = 0;
+    printf("fd-game: WASD/arrows move+turn, SPACE jump (retry when lost), "
+           "1-%zu pick a world, ESC quit\n", g_worlds.empty() ? 9 : g_worlds.size());
     while (running) {
         double now = now_s(), ft = now - prev; prev = now;
         if (ft > 0.25) ft = 0.25;
@@ -895,9 +920,26 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
         SDL_Event e;
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) running = false;
-            else if (e.type == SDL_KEYDOWN) {
-                if (e.key.keysym.sym == SDLK_ESCAPE) running = false;
-                if (e.key.keysym.sym == SDLK_SPACE)  jump_pending = true;
+            else if (e.type == SDL_KEYDOWN && !e.key.repeat) {
+                // !repeat: a held digit key must not reload the level 30x/s
+                SDL_Keycode k = e.key.keysym.sym;
+                if (k == SDLK_ESCAPE) running = false;
+                else if (k == SDLK_SPACE) {
+                    if (strcmp(g_hud.state, "lost") == 0) {   // RETRY this level
+                        if (switch_level(r, p, g_current)) {
+                            win_at = -1;
+                            if (g_gpu.active && g_gpu.reset) g_gpu.reset();
+                        }
+                    } else jump_pending = true;
+                }
+                else if (k >= SDLK_1 && k <= SDLK_9) {        // world select
+                    size_t w = (size_t)(k - SDLK_1);
+                    if (w < g_worlds.size() &&
+                        switch_level(r, p, g_worlds[w].c_str())) {
+                        win_at = -1;
+                        if (g_gpu.active && g_gpu.reset) g_gpu.reset();
+                    }
+                }
             }
         }
         const Uint8* k = SDL_GetKeyboardState(NULL);
@@ -907,7 +949,6 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
         if (k[SDL_SCANCODE_LEFT]  || k[SDL_SCANCODE_A]) in.turn -= 1;
         if (k[SDL_SCANCODE_RIGHT] || k[SDL_SCANCODE_D]) in.turn += 1;
 
-        static double win_at = -1;
         if (maybe_advance(r, p, simt, &win_at) && g_gpu.active && g_gpu.reset)
             g_gpu.reset();                       // new world, fresh GPU history
         script_tick(simt, ft, p);
@@ -978,9 +1019,11 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
         if (++fpsN >= 10) {
             char ti[160];
             if (strcmp(g_hud.state, "won") == 0)
-                snprintf(ti, sizeof ti, "%s — YOU WIN!  score %d  (ESC quit)", g_title, g_hud.score);
+                snprintf(ti, sizeof ti, "%s — YOU WIN!  score %d  (1-%zu pick a world, ESC quit)",
+                         g_title, g_hud.score, g_worlds.empty() ? 9 : g_worlds.size());
             else if (strcmp(g_hud.state, "lost") == 0)
-                snprintf(ti, sizeof ti, "%s — ouch! score %d  (ESC quit)", g_title, g_hud.score);
+                snprintf(ti, sizeof ti, "%s — ouch! score %d  (SPACE to retry!)",
+                         g_title, g_hud.score);
             else if (g_hud.lives >= 0)       // a script publishing game state
                 snprintf(ti, sizeof ti, "%s  %dx%d->%dx%d  %.0f fps (trace %.1f ms)"
                          "  score %d  lives %d", g_title, rW, rH, winW, winH,

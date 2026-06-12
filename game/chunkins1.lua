@@ -100,3 +100,5 @@ function on_tick(t, dt, player)
     end
   end
 end
+
+worlds = { "chunkins1.lua", "chunkins2.lua", "chunkins3.lua", "chunkins4.lua" }
