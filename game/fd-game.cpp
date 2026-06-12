@@ -40,8 +40,63 @@ extern "C" {
 #include <lauxlib.h>
 }
 
+#include <dlfcn.h>
+
 #include "fd_audio.h"
 static FdAudio g_audio;
+
+// ---- optional GPU post (libfdpost.so, CUDA on the local 4070) ---------------
+// dlopened only when FD_GPU=1 — the build never needs the CUDA toolkit, and
+// a missing .so / missing GPU just means the plain SDL upscale path.
+struct GpuPost {
+    int  (*init)(int, int, int, int) = NULL;
+    int  (*frame)(const uint8_t*, float, int, uint8_t*) = NULL;
+    void (*reset)() = NULL;
+    void (*shutdown)() = NULL;
+    void* handle = NULL;
+    bool active = false;
+
+    bool load(int inW, int inH, int outW, int outH) {
+        const char* env = getenv("FD_GPU");
+        if (!env || !*env || strcmp(env, "0") == 0) return false;
+        // resolve the .so next to the EXECUTABLE, never the cwd (tri-brain:
+        // cwd-relative dlopen runs untrusted code if launched elsewhere).
+        // FD_GPU_LIB overrides with an explicit path.
+        char libpath[512];
+        const char* override_path = getenv("FD_GPU_LIB");
+        if (override_path && *override_path)
+            snprintf(libpath, sizeof libpath, "%s", override_path);
+        else {
+            char exe[448];
+            ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+            if (n <= 0) return false;
+            exe[n] = 0;
+            char* slash = strrchr(exe, '/');
+            if (slash) *slash = 0;
+            snprintf(libpath, sizeof libpath, "%s/libfdpost.so", exe);
+        }
+        handle = dlopen(libpath, RTLD_NOW);
+        if (!handle) { fprintf(stderr, "fd-game: FD_GPU set but %s\n", dlerror()); return false; }
+        init     = (int  (*)(int,int,int,int))         dlsym(handle, "fdpost_init");
+        frame    = (int  (*)(const uint8_t*,float,int,uint8_t*)) dlsym(handle, "fdpost_frame");
+        reset    = (void (*)())                        dlsym(handle, "fdpost_reset");
+        shutdown = (void (*)())                        dlsym(handle, "fdpost_shutdown");
+        if (!init || !frame || !shutdown || init(inW, inH, outW, outH) != 0) {
+            fprintf(stderr, "fd-game: GPU post init failed — CPU path\n");
+            if (shutdown) shutdown();        // free any partial CUDA allocs
+            dlclose(handle); handle = NULL;
+            return false;
+        }
+        active = true;
+        return true;
+    }
+    void unload() {
+        if (active && shutdown) shutdown();
+        if (handle) dlclose(handle);
+        handle = NULL; active = false;
+    }
+};
+static GpuPost g_gpu;
 
 // ============================ protocol client ================================
 static const uint8_t FD_MAGIC = 0xFD, FD_VERSION = 0x00;
@@ -142,7 +197,7 @@ private:
 };
 
 // ============================ world + tuning =================================
-struct Aabb { float cx, cz, hx, hz, h; bool dyn; float r, g; };
+struct Aabb { float cx, cz, hx, hz, h; bool dyn; float r, g; float cy; };
 static std::vector<Aabb> g_world;
 static float P_RADIUS = 0.45f;
 
@@ -154,10 +209,10 @@ static float GRAV = -28.0f, JUMP_V = 9.5f;
 // built-in world, used when no script is present (mirrors the original arena)
 static void default_world() {
     g_world = {
-        {  0.0f,  6.0f, 2.2f, 0.6f, 1.6f, false, 0.55f, 0.35f },
-        { -5.0f,  0.0f, 0.8f, 0.8f, 0.9f, false, 0.65f, 0.40f },
-        {  5.0f, -2.0f, 0.8f, 0.8f, 2.4f, false, 0.75f, 0.45f },
-        {  4.0f,  5.0f, 1.2f, 1.2f, 0.5f, false, 0.85f, 0.50f },
+        {  0.0f,  6.0f, 2.2f, 0.6f, 1.6f, false, 0.55f, 0.35f, 0 },
+        { -5.0f,  0.0f, 0.8f, 0.8f, 0.9f, false, 0.65f, 0.40f, 0 },
+        {  5.0f, -2.0f, 0.8f, 0.8f, 2.4f, false, 0.75f, 0.45f, 0 },
+        {  4.0f,  5.0f, 1.2f, 1.2f, 0.5f, false, 0.85f, 0.50f, 0 },
     };
 }
 
@@ -165,6 +220,10 @@ static void default_world() {
 static bool collide(float* px, float* pz) {
     bool pushed = false;
     for (const Aabb& b : g_world) {
+        if (b.cy + b.h < 0.1f) continue;     // entire box below the floor —
+                                             // geometric test, not relic-magic
+                                             // (a tall box rising from a pit
+                                             // still collides; tri-brain)
         float nx = fmaxf(b.cx - b.hx, fminf(*px, b.cx + b.hx));
         float nz = fmaxf(b.cz - b.hz, fminf(*pz, b.cz + b.hz));
         float dx = *px - nx, dz = *pz - nz;
@@ -242,6 +301,7 @@ static bool load_script(const char* path) {
             b.hx = lua_field_num(g_L, "hx", 1); b.hz = lua_field_num(g_L, "hz", 1);
             b.h  = lua_field_num(g_L, "h", 1);
             b.r  = lua_field_num(g_L, "r", 0.6f); b.g = lua_field_num(g_L, "g", 0.4f);
+            b.cy = lua_field_num(g_L, "cy", 0);
             lua_getfield(g_L, -1, "dyn");
             b.dyn = lua_toboolean(g_L, -1) != 0;
             lua_pop(g_L, 1);
@@ -270,8 +330,15 @@ struct Player {
     float jy = 0, jv = 0; bool grounded = true;
 };
 
-// call on_tick(t, dt, player), then read mutated dynamic-box positions back
-static void script_tick(double t, double dt, const Player& p) {
+// game state the script publishes for the HUD / end screens
+struct GameHud {
+    int score = 0, lives = -1;          // lives -1 = script has no lives concept
+    char state[16] = "playing";         // "playing" | "won" | "lost"
+};
+static GameHud g_hud;
+
+// call on_tick(t, dt, player); read back dynamic boxes, knockback, game state
+static void script_tick(double t, double dt, Player& p) {
     if (!g_L) return;
     lua_getglobal(g_L, "on_tick");
     if (!lua_isfunction(g_L, -1)) { lua_pop(g_L, 1); return; }
@@ -297,10 +364,35 @@ static void script_tick(double t, double dt, const Player& p) {
             if (lua_istable(g_L, -1)) {
                 g_world[i].cx = lua_field_num(g_L, "cx", g_world[i].cx);
                 g_world[i].cz = lua_field_num(g_L, "cz", g_world[i].cz);
+                g_world[i].cy = lua_field_num(g_L, "cy", g_world[i].cy);
             }
             lua_pop(g_L, 1);
         }
     }
+    lua_pop(g_L, 1);
+
+    // knockback channel: script sets push_x/push_z, host applies + clears
+    lua_getglobal(g_L, "push_x");
+    lua_getglobal(g_L, "push_z");
+    if (lua_isnumber(g_L, -2) || lua_isnumber(g_L, -1)) {
+        p.x += (float)lua_tonumber(g_L, -2);
+        p.z += (float)lua_tonumber(g_L, -1);
+        collide(&p.x, &p.z);
+        lua_pushnil(g_L); lua_setglobal(g_L, "push_x");
+        lua_pushnil(g_L); lua_setglobal(g_L, "push_z");
+    }
+    lua_pop(g_L, 2);
+
+    // game state for the HUD: game_score, game_lives, game_state
+    lua_getglobal(g_L, "game_score");
+    if (lua_isnumber(g_L, -1)) g_hud.score = (int)lua_tointeger(g_L, -1);
+    lua_pop(g_L, 1);
+    lua_getglobal(g_L, "game_lives");
+    if (lua_isnumber(g_L, -1)) g_hud.lives = (int)lua_tointeger(g_L, -1);
+    lua_pop(g_L, 1);
+    lua_getglobal(g_L, "game_state");
+    if (lua_isstring(g_L, -1))
+        snprintf(g_hud.state, sizeof g_hud.state, "%s", lua_tostring(g_L, -1));
     lua_pop(g_L, 1);
 }
 
@@ -331,16 +423,18 @@ static std::string build_scene() {
         if (b.dyn) {
             snprintf(buf, sizeof buf,
                 "#ifndef (BOX%zuX) #declare BOX%zuX=%.2f; #end\n"
+                "#ifndef (BOX%zuY) #declare BOX%zuY=%.2f; #end\n"
                 "#ifndef (BOX%zuZ) #declare BOX%zuZ=%.2f; #end\n"
                 "box { <%.2f,0,%.2f>, <%.2f,%.2f,%.2f> pigment { rgb <%.2f,%.2f,0.30> }"
-                " finish { phong 0.6 } translate <BOX%zuX,0,BOX%zuZ> }\n",
-                i, i, b.cx, i, i, b.cz,
-                -b.hx, -b.hz, b.hx, b.h, b.hz, b.r, b.g, i, i);
+                " finish { phong 0.7 reflection 0.08 } translate <BOX%zuX,BOX%zuY,BOX%zuZ> }\n",
+                i, i, b.cx, i, i, b.cy, i, i, b.cz,
+                -b.hx, -b.hz, b.hx, b.h, b.hz, b.r, b.g, i, i, i);
         } else {
             snprintf(buf, sizeof buf,
-                "box { <%.2f,0,%.2f>, <%.2f,%.2f,%.2f> pigment { rgb <%.2f,%.2f,0.30> }"
+                "box { <%.2f,%.2f,%.2f>, <%.2f,%.2f,%.2f> pigment { rgb <%.2f,%.2f,0.30> }"
                 " finish { phong 0.6 } }\n",
-                b.cx - b.hx, b.cz - b.hz, b.cx + b.hx, b.h, b.cz + b.hz, b.r, b.g);
+                b.cx - b.hx, b.cy, b.cz - b.hz,
+                b.cx + b.hx, b.cy + b.h, b.cz + b.hz, b.r, b.g);
         }
         s += buf;
     }
@@ -405,6 +499,7 @@ static std::vector<Declare> declares_for(const Player& p) {
     for (size_t i = 0; i < g_world.size(); ++i) {
         if (!g_world[i].dyn) continue;
         snprintf(nm, sizeof nm, "BOX%zuX", i); d.push_back({nm, g_world[i].cx});
+        snprintf(nm, sizeof nm, "BOX%zuY", i); d.push_back({nm, g_world[i].cy});
         snprintf(nm, sizeof nm, "BOX%zuZ", i); d.push_back({nm, g_world[i].cz});
     }
     return d;
@@ -469,6 +564,37 @@ static int selftest(FdRenderer& r, int frames) {
     return (p.z <= zmax && script_ok && audio_ok) ? 0 : 1;
 }
 
+// gametest: headless proof the GAME plays — walk forward through the relic
+// the script placed on the +Z lane, assert the script awarded the pickup
+static int gametest(FdRenderer& r, int frames) {
+    Player p;
+    const float dt = 1.0f / SIM_HZ;
+    double t = 0; uint64_t us = 0;
+    int score_at_half = -1;
+    for (int i = 0; i < frames; ++i) {
+        Input in; in.move = 1;                  // hold forward
+        script_tick(t, 2 * dt, p);
+        for (int k = 0; k < 2; ++k) { simulate(p, in, dt); t += dt; }
+        if (!r.render(320, 180, declares_for(p))) return 1;
+        us += r.frame_us;
+        if (i == frames / 2) score_at_half = g_hud.score;
+    }
+    printf("fd-game gametest: %d frames, %.1f fps end-to-end\n",
+           frames, 1e6 * frames / (double)us);
+    printf("  score %d (half-way %d), lives %d, state %s\n",
+           g_hud.score, score_at_half, g_hud.lives, g_hud.state);
+    bool ok = g_hud.score >= 1 && g_hud.lives >= 0 &&
+              strcmp(g_hud.state, "lost") != 0;
+    printf("  %s\n", ok ? "GAME LOGIC LIVE (relic collected via Lua)" : "GAME LOGIC FAILED");
+    FILE* f = fopen("fd_gametest.ppm", "wb");
+    if (f) {
+        fprintf(f, "P6\n%u %u\n255\n", r.fb_w, r.fb_h);
+        for (size_t i = 0; i < (size_t)r.fb_w * r.fb_h; ++i) fwrite(&r.fb[i * 4], 1, 3, f);
+        fclose(f);
+    }
+    return ok ? 0 : 1;
+}
+
 // ============================ interactive (SDL2) =============================
 #include <SDL2/SDL.h>
 
@@ -479,8 +605,13 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
     SDL_Renderer* ren = SDL_CreateRenderer(win, -1,
         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
     int rW = winW / rdiv, rH = winH / rdiv;
+    // GPU post path: accumulate + upscale + dither on the 4070; the texture
+    // is then full window res. CPU path: stream internal res, SDL upscales.
+    bool gpu = g_gpu.load(rW, rH, winW, winH);
+    std::vector<uint8_t> gpu_out;
+    if (gpu) gpu_out.resize((size_t)winW * winH * 4);
     SDL_Texture* tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA32,
-        SDL_TEXTUREACCESS_STREAMING, rW, rH);
+        SDL_TEXTUREACCESS_STREAMING, gpu ? winW : rW, gpu ? winH : rH);
     SDL_SetTextureScaleMode(tex, SDL_ScaleModeNearest);   // the VGA crunch
 
     Player p;
@@ -509,43 +640,99 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
         if (k[SDL_SCANCODE_RIGHT] || k[SDL_SCANCODE_D]) in.turn += 1;
 
         script_tick(simt, ft, p);
+        // evaluate AFTER the tick: a state change this frame freezes this frame
+        bool over = strcmp(g_hud.state, "playing") != 0;
         while (acc >= dt) {
             in.jump = jump_pending; jump_pending = false;   // consumed by one step only
-            simulate(p, in, dt); acc -= dt; simt += dt;
+            if (!over) simulate(p, in, dt);                 // end screen: world freezes
+            acc -= dt; simt += dt;
         }
 
         if (!r.render(rW, rH, declares_for(p))) { fprintf(stderr, "render failed\n"); break; }
         if (r.frame_fits(rW, rH)) {              // soft miss: keep last frame
-            SDL_UpdateTexture(tex, NULL, r.fb.data(), rW * 4);
+            if (gpu) {
+                // motion-adaptive temporal alpha from the SIM, not estimation:
+                // still -> deep accumulation (AA), moving -> fresh (no ghosts)
+                float speed = fabsf(in.move) * SPEED + fabsf(in.turn) * 4.0f
+                            + fabsf(p.jv) * 0.4f;
+                float alpha = speed > 0.1f ? 0.85f : 0.30f;
+                if (g_gpu.frame(r.fb.data(), alpha, 32, gpu_out.data()) == 0)
+                    SDL_UpdateTexture(tex, NULL, gpu_out.data(), winW * 4);
+                else {
+                    // fall back SAFELY: the texture must shrink to internal
+                    // res or the rW-pitch upload reads out of bounds (tri-brain)
+                    fprintf(stderr, "fd-game: GPU post error — CPU path\n");
+                    g_gpu.unload(); gpu = false;
+                    SDL_DestroyTexture(tex);
+                    tex = SDL_CreateTexture(ren, SDL_PIXELFORMAT_RGBA32,
+                                            SDL_TEXTUREACCESS_STREAMING, rW, rH);
+                    SDL_SetTextureScaleMode(tex, SDL_ScaleModeNearest);
+                }
+            }
+            if (!gpu) SDL_UpdateTexture(tex, NULL, r.fb.data(), rW * 4);
             SDL_RenderClear(ren);
             SDL_RenderCopy(ren, tex, NULL, NULL);
+
+            // HUD pips: score (gold, top-left), lives (red, top-right)
+            SDL_SetRenderDrawBlendMode(ren, SDL_BLENDMODE_BLEND);
+            SDL_Rect pip;
+            for (int s = 0; s < g_hud.score && s < 32; ++s) {
+                pip = { 16 + s * 26, 14, 18, 18 };
+                SDL_SetRenderDrawColor(ren, 240, 200, 60, 235);
+                SDL_RenderFillRect(ren, &pip);
+            }
+            for (int l = 0; l < g_hud.lives && l < 32; ++l) {
+                pip = { winW - 34 - l * 26, 14, 18, 18 };
+                SDL_SetRenderDrawColor(ren, 220, 60, 60, 235);
+                SDL_RenderFillRect(ren, &pip);
+            }
+            if (over) {                          // tint: gold for won, red for lost
+                bool won = strcmp(g_hud.state, "won") == 0;
+                SDL_SetRenderDrawColor(ren, won ? 255 : 160, won ? 215 : 30,
+                                       won ? 80 : 30, 70);
+                SDL_Rect full = { 0, 0, winW, winH };
+                SDL_RenderFillRect(ren, &full);
+            }
             SDL_RenderPresent(ren);
         }
 
         if (++fpsN >= 10) {
-            char ti[128];
-            snprintf(ti, sizeof ti, "fd-game  %dx%d->%dx%d  %.0f fps (trace %.1f ms)",
-                     rW, rH, winW, winH, fpsN / (now - fpsT), r.frame_us / 1000.0);
+            char ti[160];
+            if (strcmp(g_hud.state, "won") == 0)
+                snprintf(ti, sizeof ti, "RELIC SWEEP — YOU WIN!  score %d  (ESC quit)", g_hud.score);
+            else if (strcmp(g_hud.state, "lost") == 0)
+                snprintf(ti, sizeof ti, "RELIC SWEEP — CRUSHED. score %d  (ESC quit)", g_hud.score);
+            else if (g_hud.lives >= 0)       // a script publishing game state
+                snprintf(ti, sizeof ti, "fd-game  %dx%d->%dx%d  %.0f fps (trace %.1f ms)"
+                         "  score %d  lives %d", rW, rH, winW, winH,
+                         fpsN / (now - fpsT), r.frame_us / 1000.0,
+                         g_hud.score, g_hud.lives);
+            else                             // plain world script (e.g. arena)
+                snprintf(ti, sizeof ti, "fd-game  %dx%d->%dx%d  %.0f fps (trace %.1f ms)",
+                         rW, rH, winW, winH, fpsN / (now - fpsT), r.frame_us / 1000.0);
             SDL_SetWindowTitle(win, ti);
             fpsT = now; fpsN = 0;
         }
     }
+    g_gpu.unload();
     SDL_DestroyTexture(tex); SDL_DestroyRenderer(ren); SDL_DestroyWindow(win); SDL_Quit();
     return 0;
 }
 
 int main(int argc, char** argv) {
     bool st = argc > 1 && strcmp(argv[1], "--selftest") == 0;
+    bool gt = argc > 1 && strcmp(argv[1], "--gametest") == 0;
+    bool headless = st || gt;
     // 180 default: the walk phase must REACH the wall for the bump assertion
     // (90 frames ends 1.2 units short — tri-brain caught the impossible default)
-    int frames = st && argc > 2 ? atoi(argv[2]) : 180;
-    const char* sock   = st ? (argc > 3 ? argv[3] : "/tmp/feverdream.sock")
-                            : (argc > 1 ? argv[1] : "/tmp/feverdream.sock");
-    const char* script = st ? (argc > 4 ? argv[4] : "arena.lua")
-                            : (argc > 5 ? argv[5] : "arena.lua");
-    int winW = (!st && argc > 2) ? atoi(argv[2]) : 1280;
-    int winH = (!st && argc > 3) ? atoi(argv[3]) : 720;
-    int rdiv = (!st && argc > 4) ? atoi(argv[4]) : 4;
+    int frames = headless && argc > 2 ? atoi(argv[2]) : 180;
+    const char* sock   = headless ? (argc > 3 ? argv[3] : "/tmp/feverdream.sock")
+                                  : (argc > 1 ? argv[1] : "/tmp/feverdream.sock");
+    const char* script = headless ? (argc > 4 ? argv[4] : (gt ? "relic_sweep.lua" : "arena.lua"))
+                                  : (argc > 5 ? argv[5] : "relic_sweep.lua");
+    int winW = (!headless && argc > 2) ? atoi(argv[2]) : 1280;
+    int winH = (!headless && argc > 3) ? atoi(argv[3]) : 720;
+    int rdiv = (!headless && argc > 4) ? atoi(argv[4]) : 4;
 
     if (load_script(script))
         printf("fd-game: world + config from %s (%zu boxes)\n", script, g_world.size());
@@ -566,7 +753,9 @@ int main(int argc, char** argv) {
         return 1;
     }
     if (!r.scene(build_scene())) { fprintf(stderr, "fd-game: scene rejected\n"); return 1; }
-    int rc = st ? selftest(r, frames) : play(r, winW, winH, rdiv < 1 ? 1 : rdiv);
+    int rc = st ? selftest(r, frames)
+            : gt ? gametest(r, frames)
+                 : play(r, winW, winH, rdiv < 1 ? 1 : rdiv);
     g_audio.shutdown();
     if (g_L) lua_close(g_L);
     return rc;
