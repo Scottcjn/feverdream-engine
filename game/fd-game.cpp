@@ -197,7 +197,7 @@ private:
 };
 
 // ============================ world + tuning =================================
-struct Aabb { float cx, cz, hx, hz, h; bool dyn; float r, g; float cy; };
+struct Aabb { float cx, cz, hx, hz, h; bool dyn; float r, g; float cy; bool solid; };
 static std::vector<Aabb> g_world;
 static float P_RADIUS = 0.45f;
 
@@ -209,21 +209,27 @@ static float GRAV = -28.0f, JUMP_V = 9.5f;
 // built-in world, used when no script is present (mirrors the original arena)
 static void default_world() {
     g_world = {
-        {  0.0f,  6.0f, 2.2f, 0.6f, 1.6f, false, 0.55f, 0.35f, 0 },
-        { -5.0f,  0.0f, 0.8f, 0.8f, 0.9f, false, 0.65f, 0.40f, 0 },
-        {  5.0f, -2.0f, 0.8f, 0.8f, 2.4f, false, 0.75f, 0.45f, 0 },
-        {  4.0f,  5.0f, 1.2f, 1.2f, 0.5f, false, 0.85f, 0.50f, 0 },
+        {  0.0f,  6.0f, 2.2f, 0.6f, 1.6f, false, 0.55f, 0.35f, 0, true },
+        { -5.0f,  0.0f, 0.8f, 0.8f, 0.9f, false, 0.65f, 0.40f, 0, true },
+        {  5.0f, -2.0f, 0.8f, 0.8f, 2.4f, false, 0.75f, 0.45f, 0, true },
+        {  4.0f,  5.0f, 1.2f, 1.2f, 0.5f, false, 0.85f, 0.50f, 0, true },
     };
 }
 
-// circle-vs-AABB push-out in XZ; returns true if any box pushed the player
-static bool collide(float* px, float* pz) {
+// platformer rules: a box is a WALL or a FLOOR depending on your altitude.
+// top within STEP_UP of your feet -> floor you glide onto; higher -> wall;
+// entirely above your head -> you walk underneath it.
+static float STEP_UP   = 0.35f;   // max ledge you walk up (config.step_up)
+static float HEAD_ROOM = 1.8f;    // boxes above this are overhead (config.head_room)
+
+// circle-vs-AABB push-out in XZ at a given feet height; true if pushed
+static bool collide(float* px, float* pz, float feet) {
     bool pushed = false;
     for (const Aabb& b : g_world) {
-        if (b.cy + b.h < 0.1f) continue;     // entire box below the floor —
-                                             // geometric test, not relic-magic
-                                             // (a tall box rising from a pit
-                                             // still collides; tri-brain)
+        if (!b.solid) continue;                      // collectibles/decor
+        if (b.cy + b.h < 0.1f) continue;             // sunken below the floor
+        if (b.cy + b.h <= feet + STEP_UP) continue;  // floor at this altitude
+        if (b.cy >= feet + HEAD_ROOM) continue;      // overhead — walk under
         float nx = fmaxf(b.cx - b.hx, fminf(*px, b.cx + b.hx));
         float nz = fmaxf(b.cz - b.hz, fminf(*pz, b.cz + b.hz));
         float dx = *px - nx, dz = *pz - nz;
@@ -238,6 +244,23 @@ static bool collide(float* px, float* pz) {
         }
     }
     return pushed;
+}
+
+// highest standable surface under the player at this XZ, given feet height:
+// ground plane (0) or any box top at-or-below feet + tolerance
+static float ground_height(float px, float pz, float feet, float tol) {
+    float g = 0;
+    for (const Aabb& b : g_world) {
+        if (!b.solid) continue;                      // can't stand on a star
+        if (b.cy + b.h < 0.1f) continue;
+        float top = b.cy + b.h;
+        if (top > feet + tol) continue;              // too high to stand on
+        float reach = P_RADIUS * 0.7f;               // forgiving ledge grab
+        if (px > b.cx - b.hx - reach && px < b.cx + b.hx + reach &&
+            pz > b.cz - b.hz - reach && pz < b.cz + b.hz + reach)
+            g = fmaxf(g, top);
+    }
+    return g;
 }
 
 // ============================ Lua scripting ==================================
@@ -305,6 +328,9 @@ static bool load_script(const char* path) {
             lua_getfield(g_L, -1, "dyn");
             b.dyn = lua_toboolean(g_L, -1) != 0;
             lua_pop(g_L, 1);
+            lua_getfield(g_L, -1, "solid");          // default true; collectibles
+            b.solid = lua_isnil(g_L, -1) || lua_toboolean(g_L, -1) != 0;
+            lua_pop(g_L, 1);
             g_world.push_back(b);
         }
         lua_pop(g_L, 1);
@@ -319,6 +345,8 @@ static bool load_script(const char* path) {
         GRAV      = lua_field_num(g_L, "gravity", GRAV);
         JUMP_V    = lua_field_num(g_L, "jump_v", JUMP_V);
         P_RADIUS  = lua_field_num(g_L, "player_radius", P_RADIUS);
+        STEP_UP   = lua_field_num(g_L, "step_up", STEP_UP);
+        HEAD_ROOM = lua_field_num(g_L, "head_room", HEAD_ROOM);
     }
     lua_pop(g_L, 1);
     return true;
@@ -377,7 +405,7 @@ static void script_tick(double t, double dt, Player& p) {
     if (lua_isnumber(g_L, -2) || lua_isnumber(g_L, -1)) {
         p.x += (float)lua_tonumber(g_L, -2);
         p.z += (float)lua_tonumber(g_L, -1);
-        collide(&p.x, &p.z);
+        collide(&p.x, &p.z, p.jy);
         lua_pushnil(g_L); lua_setglobal(g_L, "push_x");
         lua_pushnil(g_L); lua_setglobal(g_L, "push_z");
     }
@@ -415,9 +443,9 @@ static std::string build_scene() {
         "light_source { <-14,18,-10> rgb 1 }\n"
         "light_source { <10,8,6> rgb <0.25,0.25,0.4> shadowless }\n"
         "plane { y,0 pigment { checker rgb 0.78 rgb 0.28 } finish { ambient 0.35 } }\n"
-        "camera { location <POSX-sin(radians(TURN))*7, 4.4+JUMP*0.4,"
+        "camera { location <POSX-sin(radians(TURN))*7, 4.4+JUMP*0.85,"
         " POSZ-cos(radians(TURN))*7>\n"
-        "  look_at <POSX, 1.0+JUMP*0.6, POSZ> angle 52 right x*16/9 up y }\n";
+        "  look_at <POSX, 1.0+JUMP*0.85, POSZ> angle 52 right x*16/9 up y }\n";
     for (size_t i = 0; i < g_world.size(); ++i) {
         const Aabb& b = g_world[i];
         if (b.dyn) {
@@ -474,7 +502,7 @@ static void simulate(Player& p, const Input& in, float dt) {
     // when the player is driving into geometry, rate-limited by the cooldown.
     static float bump_cool = 0;
     bump_cool = fmaxf(0.0f, bump_cool - dt);
-    if (collide(&p.x, &p.z) && moving && bump_cool == 0.0f) {
+    if (collide(&p.x, &p.z, p.jy) && moving && bump_cool == 0.0f) {
         g_audio.play(FdAudio::BUMP, 0.8f);
         bump_cool = 0.25f;
     }
@@ -482,12 +510,27 @@ static void simulate(Player& p, const Input& in, float dt) {
         p.jv = JUMP_V; p.grounded = false;
         g_audio.play(FdAudio::JUMP);
     }
+    if (p.grounded) {
+        // follow the floor: step up small ledges, ride rising platforms,
+        // and FALL when the floor is no longer under you (edges, sinking lifts)
+        float g = ground_height(p.x, p.z, p.jy, STEP_UP);
+        if (g < p.jy - 0.05f) p.grounded = false;    // walked off an edge
+        else p.jy = g;
+    }
     if (!p.grounded) {
+        float prev_jy = p.jy;
         p.jv += GRAV * dt; p.jy += p.jv * dt;
-        if (p.jy <= 0) {
-            p.jy = 0; p.jv = 0; p.grounded = true;
-            g_audio.play(FdAudio::LAND);
+        if (p.jv <= 0) {                             // land only while falling
+            // SWEPT landing: any surface we passed between previous and new
+            // feet height catches us — a fast fall can't tunnel a platform
+            // between ticks (tri-brain)
+            float g = ground_height(p.x, p.z, prev_jy, 0.05f);
+            if (p.jy <= g) {
+                p.jy = g; p.jv = 0; p.grounded = true;
+                g_audio.play(FdAudio::LAND);
+            }
         }
+        if (p.jy < 0) { p.jy = 0; p.jv = 0; p.grounded = true; }  // safety floor
     }
 }
 
@@ -571,18 +614,21 @@ static int gametest(FdRenderer& r, int frames) {
     const float dt = 1.0f / SIM_HZ;
     double t = 0; uint64_t us = 0;
     int score_at_half = -1;
+    float max_feet = 0;
     for (int i = 0; i < frames; ++i) {
-        Input in; in.move = 1;                  // hold forward
+        Input in; in.move = 1;                  // hold forward...
+        in.jump = (i % 60 == 30);               // ...hopping as it goes
         script_tick(t, 2 * dt, p);
-        for (int k = 0; k < 2; ++k) { simulate(p, in, dt); t += dt; }
+        for (int k = 0; k < 2; ++k) { simulate(p, in, dt); in.jump = false; t += dt; }
+        max_feet = fmaxf(max_feet, p.grounded ? p.jy : max_feet);
         if (!r.render(320, 180, declares_for(p))) return 1;
         us += r.frame_us;
         if (i == frames / 2) score_at_half = g_hud.score;
     }
     printf("fd-game gametest: %d frames, %.1f fps end-to-end\n",
            frames, 1e6 * frames / (double)us);
-    printf("  score %d (half-way %d), lives %d, state %s\n",
-           g_hud.score, score_at_half, g_hud.lives, g_hud.state);
+    printf("  score %d (half-way %d), lives %d, state %s, highest stand %.2f\n",
+           g_hud.score, score_at_half, g_hud.lives, g_hud.state, max_feet);
     bool ok = g_hud.score >= 1 && g_hud.lives >= 0 &&
               strcmp(g_hud.state, "lost") != 0;
     printf("  %s\n", ok ? "GAME LOGIC LIVE (relic collected via Lua)" : "GAME LOGIC FAILED");

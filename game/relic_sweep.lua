@@ -28,12 +28,12 @@ boxes = {
   { cx =  0, cz =  4, hx = 1.5, hz = 0.7, h = 0.8, r = 0.80, g = 0.25, dyn = true },
   { cx =  0, cz = -7, hx = 1.5, hz = 0.7, h = 0.8, r = 0.80, g = 0.25, dyn = true },
   -- relics: small gold cubes, bobbing. First one dead ahead (gametest path).
-  { cx =   0, cz =   3, hx = 0.28, hz = 0.28, h = 0.55, r = 1.0, g = 0.85, dyn = true },
-  { cx =   8, cz =   8, hx = 0.28, hz = 0.28, h = 0.55, r = 1.0, g = 0.85, dyn = true },
-  { cx =  -8, cz =   8, hx = 0.28, hz = 0.28, h = 0.55, r = 1.0, g = 0.85, dyn = true },
-  { cx =   9, cz =  -9, hx = 0.28, hz = 0.28, h = 0.55, r = 1.0, g = 0.85, dyn = true },
-  { cx =  -9, cz =  -9, hx = 0.28, hz = 0.28, h = 0.55, r = 1.0, g = 0.85, dyn = true },
-  { cx =   0, cz = -11, hx = 0.28, hz = 0.28, h = 0.55, r = 1.0, g = 0.85, dyn = true },
+  { cx =   0, cz =   3, hx = 0.28, hz = 0.28, h = 0.55, r = 1.0, g = 0.85, dyn = true, solid = false },
+  { cx =   8, cz =   8, hx = 0.28, hz = 0.28, h = 0.55, r = 1.0, g = 0.85, dyn = true, solid = false },
+  { cx =  -8, cz =   8, hx = 0.28, hz = 0.28, h = 0.55, r = 1.0, g = 0.85, dyn = true, solid = false },
+  { cx =   9, cz =  -9, hx = 0.28, hz = 0.28, h = 0.55, r = 1.0, g = 0.85, dyn = true, solid = false },
+  { cx =  -9, cz =  -9, hx = 0.28, hz = 0.28, h = 0.55, r = 1.0, g = 0.85, dyn = true, solid = false },
+  { cx =   0, cz = -11, hx = 0.28, hz = 0.28, h = 0.55, r = 1.0, g = 0.85, dyn = true, solid = false },
 }
 
 local PATROLS = { boxes[7], boxes[8] }
