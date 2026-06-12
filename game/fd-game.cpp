@@ -1,22 +1,25 @@
 // SPDX-License-Identifier: MIT
 // fd-game.cpp -- Feverdream Engine: the game host (the MIT side of the firewall).
 //
-// This binary links SDL2 and libc ONLY -- no POV-Ray headers, no POV archives.
-// It speaks the PROTOCOL.md wire format to fd-daemon over a Unix socket: the
-// scene goes over once as plain POV SDL text, then every frame is RENDER plus
-// generic name=float declares. See ../GAME_ENGINE.md §1/§4.
+// This binary links SDL2, Lua 5.4 and libc ONLY -- no POV-Ray headers, no POV
+// archives. It speaks the PROTOCOL.md wire format to fd-daemon over a Unix
+// socket: the scene goes over once as plain POV SDL text, then every frame is
+// RENDER plus generic name=float declares. See ../GAME_ENGINE.md §1/§4.
 //
 // What it is: the smallest real game loop over the raytracer --
 //   - fixed-timestep simulation (120 Hz accumulator; Gaffer "Fix Your Timestep")
-//   - entity state + a collision world (ground + AABBs) owned by the HOST;
-//     the scene text is GENERATED from that same collision data at startup,
-//     so the world you collide with is provably the world you see
+//   - Lua 5.4 scripting (arena.lua): the script DEFINES the world (boxes) and
+//     tunes movement; an on_tick(t, dt, player) hook animates dynamic boxes.
+//     Dynamic boxes are simultaneously collision volumes AND raytraced
+//     geometry -- their positions go to the renderer as declares, so the world
+//     you collide with is provably the world you see (single source of truth,
+//     now in the script)
 //   - third-person character: WASD/arrows move+turn, space jumps
 //   - render free-running: internal res -> SDL streaming texture upscale
 //
-//   fd-game [sock] [winW] [winH] [rdiv]
-//   fd-game --selftest N [sock]     headless: scripted input, asserts the
-//                                   collision wall held, dumps PPM, prints fps
+//   fd-game [sock] [winW] [winH] [rdiv] [script.lua]
+//   fd-game --selftest N [sock] [script.lua]   headless: scripted input,
+//                                              asserts collision, dumps PPM
 
 #include <cstdio>
 #include <cstdlib>
@@ -31,13 +34,19 @@
 #include <sys/socket.h>
 #include <sys/un.h>
 
+extern "C" {
+#include <lua.h>
+#include <lualib.h>
+#include <lauxlib.h>
+}
+
 // ============================ protocol client ================================
 static const uint8_t FD_MAGIC = 0xFD, FD_VERSION = 0x00;
 static const uint8_t T_SCENE_FULL = 0x01, T_RENDER = 0x02, T_SHUTDOWN = 0x7F;
 static const uint8_t T_FRAME = 0x81, T_SCENE_ACK = 0x82, T_ERROR = 0xEE;
 static const uint8_t FLAG_WANT_FB = 0x01;
 
-struct Declare { const char* name; float value; };
+struct Declare { std::string name; float value; };
 
 class FdRenderer {
     int fd_ = -1;
@@ -70,9 +79,8 @@ public:
         b.push_back(0);                                       // aa off
         b.push_back((uint8_t)decls.size());
         for (const Declare& d : decls) {
-            size_t n = strlen(d.name);
-            b.push_back((uint8_t)n);
-            b.insert(b.end(), d.name, d.name + n);
+            b.push_back((uint8_t)d.name.size());
+            b.insert(b.end(), d.name.begin(), d.name.end());
             f32(d.value);
         }
         if (!send(T_RENDER, FLAG_WANT_FB, b.data(), (uint32_t)b.size())) return false;
@@ -119,48 +127,163 @@ private:
     }
 };
 
-// ============================ collision world ================================
-// Host-owned, never queried from render geometry (GAME_ENGINE.md §3).
-struct Aabb { float cx, cz, hx, hz, h; };          // center XZ, half-extents, height
-static const Aabb WORLD[] = {
-    {  0.0f,  6.0f, 2.2f, 0.6f, 1.6f },            // wall ahead of spawn
-    { -5.0f,  0.0f, 0.8f, 0.8f, 0.9f },            // crate left
-    {  5.0f, -2.0f, 0.8f, 0.8f, 2.4f },            // pillar right
-    {  4.0f,  5.0f, 1.2f, 1.2f, 0.5f },            // low step
-};
-static const int   NWORLD   = sizeof WORLD / sizeof WORLD[0];
-static const float P_RADIUS = 0.45f;               // player's XZ circle
+// ============================ world + tuning =================================
+struct Aabb { float cx, cz, hx, hz, h; bool dyn; float r, g; };
+static std::vector<Aabb> g_world;
+static float P_RADIUS = 0.45f;
 
-// circle-vs-AABB push-out in XZ (ignores Y while jumping over low boxes is TODO)
+// movement tuning -- overridable from the script's `config` table
+static float SIM_HZ = 120.0f;
+static float SPEED = 4.2f, TURN_RATE = 2.6f, STEP_RATE = 11.0f;
+static float GRAV = -28.0f, JUMP_V = 9.5f;
+
+// built-in world, used when no script is present (mirrors the original arena)
+static void default_world() {
+    g_world = {
+        {  0.0f,  6.0f, 2.2f, 0.6f, 1.6f, false, 0.55f, 0.35f },
+        { -5.0f,  0.0f, 0.8f, 0.8f, 0.9f, false, 0.65f, 0.40f },
+        {  5.0f, -2.0f, 0.8f, 0.8f, 2.4f, false, 0.75f, 0.45f },
+        {  4.0f,  5.0f, 1.2f, 1.2f, 0.5f, false, 0.85f, 0.50f },
+    };
+}
+
+// circle-vs-AABB push-out in XZ
 static void collide(float* px, float* pz) {
-    for (int i = 0; i < NWORLD; ++i) {
-        const Aabb& b = WORLD[i];
-        float nx = fmaxf(b.cx - b.hx, fminf(*px, b.cx + b.hx));   // nearest point
+    for (const Aabb& b : g_world) {
+        float nx = fmaxf(b.cx - b.hx, fminf(*px, b.cx + b.hx));
         float nz = fmaxf(b.cz - b.hz, fminf(*pz, b.cz + b.hz));
         float dx = *px - nx, dz = *pz - nz;
         float d2 = dx * dx + dz * dz;
         if (d2 >= P_RADIUS * P_RADIUS) continue;
-        if (d2 > 1e-9f) {                                          // push out along normal
+        if (d2 > 1e-9f) {
             float d = sqrtf(d2), s = (P_RADIUS - d) / d;
             *px += dx * s; *pz += dz * s;
-        } else {                                                   // center inside: pop +X
+        } else {
             *px = b.cx + b.hx + P_RADIUS;
         }
     }
 }
 
-// ====================== scene recipe (generated, .kkrieger-style) ============
-// The SAME WORLD[] that drives collision is emitted as POV box{}es: one source
-// of truth. Character + camera are driven per frame by declares only.
+// ============================ Lua scripting ==================================
+// The script owns the world: a global `boxes` array defines the arena (each
+// entry {cx,cz,hx,hz,h [,dyn] [,r] [,g]}), an optional `config` table tunes
+// movement, and an optional on_tick(t, dt, player) hook runs once per render
+// frame -- it may mutate dynamic boxes' cx/cz in the global `boxes` table,
+// which the host reads back into BOTH the collision world and the renderer
+// declares. Player table is read-only this round.
+static lua_State* g_L = NULL;
+
+static float lua_field_num(lua_State* L, const char* k, float dflt) {
+    lua_getfield(L, -1, k);
+    float v = lua_isnumber(L, -1) ? (float)lua_tonumber(L, -1) : dflt;
+    lua_pop(L, 1);
+    return v;
+}
+
+static bool load_script(const char* path) {
+    FILE* probe = fopen(path, "rb");
+    if (!probe) return false;
+    fclose(probe);
+
+    g_L = luaL_newstate();
+    luaL_openlibs(g_L);
+    if (luaL_dofile(g_L, path) != LUA_OK) {
+        fprintf(stderr, "fd-game: lua error in %s: %s\n", path, lua_tostring(g_L, -1));
+        lua_close(g_L); g_L = NULL;
+        return false;
+    }
+
+    lua_getglobal(g_L, "config");
+    if (lua_istable(g_L, -1)) {
+        SPEED     = lua_field_num(g_L, "speed", SPEED);
+        TURN_RATE = lua_field_num(g_L, "turn_rate", TURN_RATE);
+        STEP_RATE = lua_field_num(g_L, "step_rate", STEP_RATE);
+        GRAV      = lua_field_num(g_L, "gravity", GRAV);
+        JUMP_V    = lua_field_num(g_L, "jump_v", JUMP_V);
+        P_RADIUS  = lua_field_num(g_L, "player_radius", P_RADIUS);
+    }
+    lua_pop(g_L, 1);
+
+    lua_getglobal(g_L, "boxes");
+    if (!lua_istable(g_L, -1)) {
+        fprintf(stderr, "fd-game: %s defines no `boxes` table\n", path);
+        lua_pop(g_L, 1);
+        return false;
+    }
+    g_world.clear();
+    int n = (int)luaL_len(g_L, -1);
+    for (int i = 1; i <= n && i <= 32; ++i) {
+        lua_rawgeti(g_L, -1, i);
+        if (lua_istable(g_L, -1)) {
+            Aabb b;
+            b.cx = lua_field_num(g_L, "cx", 0); b.cz = lua_field_num(g_L, "cz", 0);
+            b.hx = lua_field_num(g_L, "hx", 1); b.hz = lua_field_num(g_L, "hz", 1);
+            b.h  = lua_field_num(g_L, "h", 1);
+            b.r  = lua_field_num(g_L, "r", 0.6f); b.g = lua_field_num(g_L, "g", 0.4f);
+            lua_getfield(g_L, -1, "dyn");
+            b.dyn = lua_toboolean(g_L, -1) != 0;
+            lua_pop(g_L, 1);
+            g_world.push_back(b);
+        }
+        lua_pop(g_L, 1);
+    }
+    lua_pop(g_L, 1);
+    return true;
+}
+
+struct Player {
+    float x = 0, z = 0, yaw = 0;
+    float step = 0;
+    float jy = 0, jv = 0; bool grounded = true;
+};
+
+// call on_tick(t, dt, player), then read mutated dynamic-box positions back
+static void script_tick(double t, double dt, const Player& p) {
+    if (!g_L) return;
+    lua_getglobal(g_L, "on_tick");
+    if (!lua_isfunction(g_L, -1)) { lua_pop(g_L, 1); return; }
+    lua_pushnumber(g_L, t);
+    lua_pushnumber(g_L, dt);
+    lua_newtable(g_L);
+    lua_pushnumber(g_L, p.x);        lua_setfield(g_L, -2, "x");
+    lua_pushnumber(g_L, p.z);        lua_setfield(g_L, -2, "z");
+    lua_pushnumber(g_L, p.yaw);      lua_setfield(g_L, -2, "yaw");
+    lua_pushnumber(g_L, p.jy);       lua_setfield(g_L, -2, "jump");
+    lua_pushboolean(g_L, p.grounded);lua_setfield(g_L, -2, "grounded");
+    if (lua_pcall(g_L, 3, 0, 0) != LUA_OK) {
+        // a script error must never kill the frame loop -- report and carry on
+        fprintf(stderr, "fd-game: on_tick error: %s\n", lua_tostring(g_L, -1));
+        lua_pop(g_L, 1);
+        return;
+    }
+    lua_getglobal(g_L, "boxes");
+    if (lua_istable(g_L, -1)) {
+        for (size_t i = 0; i < g_world.size(); ++i) {
+            if (!g_world[i].dyn) continue;
+            lua_rawgeti(g_L, -1, (int)i + 1);
+            if (lua_istable(g_L, -1)) {
+                g_world[i].cx = lua_field_num(g_L, "cx", g_world[i].cx);
+                g_world[i].cz = lua_field_num(g_L, "cz", g_world[i].cz);
+            }
+            lua_pop(g_L, 1);
+        }
+    }
+    lua_pop(g_L, 1);
+}
+
+// ====================== scene recipe (generated) =============================
+// Static boxes are baked into the SDL text; dynamic boxes are emitted centered
+// at the origin and placed per frame via BOX<i>X/BOX<i>Z declares -- same
+// values that drive their collision AABBs.
 static std::string build_scene() {
     char buf[512];
     std::string s =
         "#version 3.7;\n"
-        "// generated by fd-game from its collision world -- do not hand-edit\n"
+        "// generated by fd-game from the script's world table -- do not hand-edit\n"
         "#ifndef (POSX) #declare POSX=0; #end\n"
         "#ifndef (POSZ) #declare POSZ=0; #end\n"
         "#ifndef (JUMP) #declare JUMP=0; #end\n"
-        "#ifndef (TURN) #declare TURN=0; #end\n"   // degrees
+        "#ifndef (TURN) #declare TURN=0; #end\n"
         "#ifndef (STEP) #declare STEP=0; #end\n"
         "global_settings { assumed_gamma 1.0 }\n"
         "background { rgb <0.07,0.08,0.13> }\n"
@@ -170,13 +293,22 @@ static std::string build_scene() {
         "camera { location <POSX-sin(radians(TURN))*7, 4.4+JUMP*0.4,"
         " POSZ-cos(radians(TURN))*7>\n"
         "  look_at <POSX, 1.0+JUMP*0.6, POSZ> angle 52 right x*16/9 up y }\n";
-    for (int i = 0; i < NWORLD; ++i) {
-        const Aabb& b = WORLD[i];
-        snprintf(buf, sizeof buf,
-            "box { <%.2f,0,%.2f>, <%.2f,%.2f,%.2f> pigment { rgb <%.2f,%.2f,0.30> }"
-            " finish { phong 0.6 } }\n",
-            b.cx - b.hx, b.cz - b.hz, b.cx + b.hx, b.h, b.cz + b.hz,
-            0.55 + 0.1 * i, 0.35 + 0.05 * i);
+    for (size_t i = 0; i < g_world.size(); ++i) {
+        const Aabb& b = g_world[i];
+        if (b.dyn) {
+            snprintf(buf, sizeof buf,
+                "#ifndef (BOX%zuX) #declare BOX%zuX=%.2f; #end\n"
+                "#ifndef (BOX%zuZ) #declare BOX%zuZ=%.2f; #end\n"
+                "box { <%.2f,0,%.2f>, <%.2f,%.2f,%.2f> pigment { rgb <%.2f,%.2f,0.30> }"
+                " finish { phong 0.6 } translate <BOX%zuX,0,BOX%zuZ> }\n",
+                i, i, b.cx, i, i, b.cz,
+                -b.hx, -b.hz, b.hx, b.h, b.hz, b.r, b.g, i, i);
+        } else {
+            snprintf(buf, sizeof buf,
+                "box { <%.2f,0,%.2f>, <%.2f,%.2f,%.2f> pigment { rgb <%.2f,%.2f,0.30> }"
+                " finish { phong 0.6 } }\n",
+                b.cx - b.hx, b.cz - b.hz, b.cx + b.hx, b.h, b.cz + b.hz, b.r, b.g);
+        }
         s += buf;
     }
     s +=
@@ -196,35 +328,34 @@ static std::string build_scene() {
 }
 
 // ============================ simulation =====================================
-struct Player {
-    float x = 0, z = 0, yaw = 0;       // yaw radians; forward = (sin,cos)
-    float step = 0;                    // walk-cycle phase
-    float jy = 0, jv = 0; bool grounded = true;
-};
 struct Input { float move = 0, turn = 0; bool jump = false; };
 
-static const float SIM_DT = 1.0f / 120.0f;          // fixed timestep
-static const float SPEED = 4.2f, TURN_RATE = 2.6f, STEP_RATE = 11.0f;
-static const float GRAV = -28.0f, JUMP_V = 9.5f;
-
-static void simulate(Player& p, const Input& in) {
-    p.yaw += in.turn * TURN_RATE * SIM_DT;
+static void simulate(Player& p, const Input& in, float dt) {
+    p.yaw += in.turn * TURN_RATE * dt;
     if (in.move != 0) {
-        p.step += STEP_RATE * SIM_DT * (in.move > 0 ? 1 : -1);
-        p.x += sinf(p.yaw) * in.move * SPEED * SIM_DT;
-        p.z += cosf(p.yaw) * in.move * SPEED * SIM_DT;
-        collide(&p.x, &p.z);
+        p.step += STEP_RATE * dt * (in.move > 0 ? 1 : -1);
+        p.x += sinf(p.yaw) * in.move * SPEED * dt;
+        p.z += cosf(p.yaw) * in.move * SPEED * dt;
     }
+    collide(&p.x, &p.z);     // always: dynamic boxes can move INTO the player
     if (in.jump && p.grounded) { p.jv = JUMP_V; p.grounded = false; }
     if (!p.grounded) {
-        p.jv += GRAV * SIM_DT; p.jy += p.jv * SIM_DT;
+        p.jv += GRAV * dt; p.jy += p.jv * dt;
         if (p.jy <= 0) { p.jy = 0; p.jv = 0; p.grounded = true; }
     }
 }
 
 static std::vector<Declare> declares_for(const Player& p) {
-    return { {"POSX", p.x}, {"POSZ", p.z}, {"JUMP", p.jy},
-             {"TURN", p.yaw * 57.29578f}, {"STEP", p.step} };
+    std::vector<Declare> d = {
+        {"POSX", p.x}, {"POSZ", p.z}, {"JUMP", p.jy},
+        {"TURN", p.yaw * 57.29578f}, {"STEP", p.step} };
+    char nm[16];
+    for (size_t i = 0; i < g_world.size(); ++i) {
+        if (!g_world[i].dyn) continue;
+        snprintf(nm, sizeof nm, "BOX%zuX", i); d.push_back({nm, g_world[i].cx});
+        snprintf(nm, sizeof nm, "BOX%zuZ", i); d.push_back({nm, g_world[i].cz});
+    }
+    return d;
 }
 
 static double now_s() {
@@ -235,24 +366,39 @@ static double now_s() {
 // ============================ selftest (headless) ============================
 static int selftest(FdRenderer& r, int frames) {
     Player p;
+    const float dt = 1.0f / SIM_HZ;
     double t0 = now_s(); uint64_t sim_us = 0;
+    double t = 0;
+    // track PEAK deviation of dynamic boxes from spawn — a sinusoidal patrol
+    // can be back at spawn on the exact final frame (it was, at 180 frames)
+    std::vector<float> spawn_cx; float max_dev = 0;
+    for (const Aabb& b : g_world) spawn_cx.push_back(b.cx);
     for (int i = 0; i < frames; ++i) {
         Input in;
         if (i < frames * 2 / 3) in.move = 1;        // walk into the wall ahead
         else in.jump = (i == frames * 2 / 3);       // then jump once
-        // fixed accumulator: 1/60 of wall time per render frame -> 2 sim steps
-        for (int k = 0; k < 2; ++k) simulate(p, in);
+        script_tick(t, 2 * dt, p);                  // sim time, not wall time
+        for (size_t bi = 0; bi < g_world.size(); ++bi)
+            if (g_world[bi].dyn)
+                max_dev = fmaxf(max_dev, fabsf(g_world[bi].cx - spawn_cx[bi]));
+        for (int k = 0; k < 2; ++k) { simulate(p, in, dt); t += dt; }
         if (!r.render(320, 180, declares_for(p))) return 1;
         sim_us += r.frame_us;
     }
     double wall = now_s() - t0;
-    // the wall AABB front face is at z = 6.0-0.6 = 5.4; player radius 0.45
+    // wall box front face z=5.4 (first box cz-hz from the script), radius 0.45
     float zmax = 5.4f - P_RADIUS + 0.001f;
     printf("fd-game selftest: %d frames, daemon avg %.2f ms => %.1f fps, "
            "end-to-end %.1f fps\n", frames, sim_us / 1000.0 / frames,
            1e6 * frames / (double)sim_us, frames / wall);
     printf("  player stopped at z=%.3f (wall clamp %.3f): %s\n", p.z, zmax,
            p.z <= zmax ? "COLLISION HELD" : "COLLISION FAILED");
+    bool script_ok = true;
+    if (g_L) {
+        script_ok = max_dev > 0.5f;
+        printf("  dynamic patrol box: peak deviation %.2f — %s\n", max_dev,
+               script_ok ? "MOVED (script driving world)" : "DID NOT MOVE");
+    }
     FILE* f = fopen("fd_game_selftest.ppm", "wb");
     if (f) {
         fprintf(f, "P6\n%u %u\n255\n", r.fb_w, r.fb_h);
@@ -260,7 +406,7 @@ static int selftest(FdRenderer& r, int frames) {
         fclose(f);
         printf("  last frame -> fd_game_selftest.ppm\n");
     }
-    return p.z <= zmax ? 0 : 1;
+    return (p.z <= zmax && script_ok) ? 0 : 1;
 }
 
 // ============================ interactive (SDL2) =============================
@@ -278,12 +424,13 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
     SDL_SetTextureScaleMode(tex, SDL_ScaleModeNearest);   // the VGA crunch
 
     Player p;
+    const float dt = 1.0f / SIM_HZ;
     bool running = true;
-    double prev = now_s(), acc = 0, fpsT = prev; int fpsN = 0;
+    double prev = now_s(), acc = 0, simt = 0, fpsT = prev; int fpsN = 0;
     printf("fd-game: WASD/arrows move+turn, SPACE jump, ESC quit\n");
     while (running) {
         double now = now_s(), ft = now - prev; prev = now;
-        if (ft > 0.25) ft = 0.25;                          // hitch clamp
+        if (ft > 0.25) ft = 0.25;
         acc += ft;
 
         SDL_Event e; bool jump = false;
@@ -301,7 +448,8 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
         if (k[SDL_SCANCODE_LEFT]  || k[SDL_SCANCODE_A]) in.turn -= 1;
         if (k[SDL_SCANCODE_RIGHT] || k[SDL_SCANCODE_D]) in.turn += 1;
 
-        while (acc >= SIM_DT) { simulate(p, in); acc -= SIM_DT; in.jump = false; }
+        script_tick(simt, ft, p);
+        while (acc >= dt) { simulate(p, in, dt); acc -= dt; simt += dt; in.jump = false; }
 
         if (!r.render(rW, rH, declares_for(p))) { fprintf(stderr, "render failed\n"); break; }
         SDL_UpdateTexture(tex, NULL, r.fb.data(), rW * 4);
@@ -310,10 +458,10 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
         SDL_RenderPresent(ren);
 
         if (++fpsN >= 10) {
-            char t[128];
-            snprintf(t, sizeof t, "fd-game  %dx%d->%dx%d  %.0f fps (trace %.1f ms)",
+            char ti[128];
+            snprintf(ti, sizeof ti, "fd-game  %dx%d->%dx%d  %.0f fps (trace %.1f ms)",
                      rW, rH, winW, winH, fpsN / (now - fpsT), r.frame_us / 1000.0);
-            SDL_SetWindowTitle(win, t);
+            SDL_SetWindowTitle(win, ti);
             fpsT = now; fpsN = 0;
         }
     }
@@ -324,11 +472,20 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
 int main(int argc, char** argv) {
     bool st = argc > 1 && strcmp(argv[1], "--selftest") == 0;
     int frames = st && argc > 2 ? atoi(argv[2]) : 90;
-    const char* sock = st ? (argc > 3 ? argv[3] : "/tmp/feverdream.sock")
-                          : (argc > 1 ? argv[1] : "/tmp/feverdream.sock");
+    const char* sock   = st ? (argc > 3 ? argv[3] : "/tmp/feverdream.sock")
+                            : (argc > 1 ? argv[1] : "/tmp/feverdream.sock");
+    const char* script = st ? (argc > 4 ? argv[4] : "arena.lua")
+                            : (argc > 5 ? argv[5] : "arena.lua");
     int winW = (!st && argc > 2) ? atoi(argv[2]) : 1280;
     int winH = (!st && argc > 3) ? atoi(argv[3]) : 720;
     int rdiv = (!st && argc > 4) ? atoi(argv[4]) : 4;
+
+    if (load_script(script))
+        printf("fd-game: world + config from %s (%zu boxes)\n", script, g_world.size());
+    else {
+        printf("fd-game: no script (%s) — built-in arena\n", script);
+        default_world();
+    }
 
     FdRenderer r;
     if (!r.connect_to(sock)) {
@@ -336,5 +493,7 @@ int main(int argc, char** argv) {
         return 1;
     }
     if (!r.scene(build_scene())) { fprintf(stderr, "fd-game: scene rejected\n"); return 1; }
-    return st ? selftest(r, frames) : play(r, winW, winH, rdiv < 1 ? 1 : rdiv);
+    int rc = st ? selftest(r, frames) : play(r, winW, winH, rdiv < 1 ? 1 : rdiv);
+    if (g_L) lua_close(g_L);
+    return rc;
 }
