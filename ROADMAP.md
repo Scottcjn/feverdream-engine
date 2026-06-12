@@ -19,16 +19,19 @@ measures the full cost on real scenes.
 - [x] **Gate result:** real raytraced frames live in memory; **1.4 → ~9–12 fps**
       (thread-count-dependent). Gate substantially met; >30 fps is Phase 2.
 
-### Phase 2 — Resident thread-pool + scene (next; the .kkrieger lesson)
-The remaining wall: POV rebuilds its **render thread-pool every frame** (more
-threads = slower on small frames; bigger res = better fps — fixed-overhead
-signature, FINDINGS §4). The .kkrieger lesson: do expensive setup ONCE, keep it
-resident, lean per-frame loop.
-- [ ] Keep the render thread-pool alive across frames (don't spawn/join per render)
-- [ ] Keep the scene database + bounding hierarchy resident; per frame mutate only
-      transforms + camera (animation moves out of SDL `clock` into the host loop)
-- [ ] Accel-structure **refit** on motion; full rebuild only on topology change
-- [ ] **Gate:** sustained 60 fps at 320×180 on a real scene
+### Phase 2 — Resident thread-pool + scene (the .kkrieger lesson)
+The remaining wall WAS per-frame regeneration. Measured truth (FINDINGS §7):
+the "thread churn" was mostly every TraceTask rebuilding identical
+random-sequence tables from a default-seeded mt19937 — 33% of daemon CPU.
+- [x] Persistent task worker pool (parser + trace tasks; `FD_NO_TASK_POOL=1`
+      reverts) — neutral post-cache on this box, right shape for the engine
+- [x] Memoize + share random sequences (the 33% bug); driver polls → 200µs;
+      output verified bit-identical via deterministic selftest hash
+- [x] **Gate MET:** 320×180 sustained — spin 107 fps, bee_world 91 fps,
+      fd-game arena 138 fps end-to-end (floor 64×36: 9.85 → 2.34 ms)
+- [ ] Keep the scene database + bounding hierarchy resident; per frame mutate
+      only transforms + camera (two-level BVH per GAME_ENGINE.md §2) — deferred
+      until scenes are heavy enough for parse (~1-1.5ms) to matter
 
 ### Phase 3 — DLSS-style temporal layer (RTX 5070 on .106)
 - [ ] Emit depth + object-ID buffers from the tracer (cheap)

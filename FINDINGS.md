@@ -67,6 +67,39 @@ backend has two driver loops that poll their task queues with coarse sleeps:
 The render finishes in microseconds, but the driver **sleeps 50ms before noticing
 it's done**. Same bug as the message poll, one layer down. Cut both to 1ms.
 
+## 7. Phase 2: the busy-work era (sleeps are dead; long live the profiler)
+
+With the sleeps gone, the daemon pegged ~108% CPU at the frame floor — the
+remaining overhead was WORK, not waiting. Method change: stop hunting Delay()
+calls, start reading perf.
+
+**The 33% bug.** perf on an empty scene showed `pov::RandomDoubles` eating
+**33.5% of total daemon CPU**. Every TraceTask constructor (×N threads ×every
+frame) rebuilt the random-sequence tables for pixel jitter (TracePixel) and
+radiosity sample directions (RadiosityFunction) — from a **default-seeded**
+mt19937, i.e. the identical values every single time. Memoized the sequences
+(`randomsequences.cpp`); a follow-up perf pass showed the cache's 32KB vector
+copy itself at 12% (`memmove`), so `RandomDoubleSequence` now holds a
+`shared_ptr` to the immutable cached vector — zero generation, zero copy.
+Bit-identical output (deterministic 180-frame game selftest PPM hash unchanged).
+
+**This also explains §4's paradox at the root**: "more threads = slower" was
+never mostly thread-spawn — it was every extra thread's TraceTask regenerating
+the same tables. The persistent task pool (below) and the cache were measured
+together and separately; after the cache, pooled vs spawn-per-task is a wash on
+this box (8.59 vs 8.67 ms @320×180, 60-frame A/B).
+
+**Persistent worker pool** (`task.cpp`): Task::Start now submits to a
+process-lifetime worker pool instead of spawning a boost::thread per task
+(parser task + N trace tasks per frame). Per-task POVMS context and thread
+startup/cleanup semantics unchanged; `FD_NO_TASK_POOL=1` reverts to stock
+behavior. Neutral on this box post-cache; keeps us honest on slower boxes and
+higher thread counts, and it's the right resident-engine shape.
+
+**Driver polls**: the two control-loop `Delay(1)` polls dropped to 200µs
+nanosleeps; the POVMS receive fallback dropped 0.1ms→20µs (measured ≈nothing —
+the cv wakes do work; kept anyway, it's free).
+
 ## Scoreboard
 
 | stage | per-frame | fps |
@@ -74,20 +107,23 @@ it's done**. Same bug as the message poll, one layer down. Cut both to 1ms.
 | stock povray (respawn + disk) | ~700 ms | 1.4 |
 | resident process + 50ms→0.1ms message poll | ~120 ms | ~8 |
 | + low thread count | ~81 ms | ~12 |
-| **+ cut backend driver delays (50ms+10ms→1ms)** | **~13 ms** | **77** |
+| + cut backend driver delays (50ms+10ms→1ms) | ~13 ms | 77 |
+| **+ Phase 2: task pool, 0.2ms polls, sequence cache** | **~9 ms @320×180** | **107–141** |
 
-**~55× stock.** And it now **scales with resolution** (320×180 = 77fps, 480×270
-= 48, 960×540 = 17) — i.e. we are finally **trace-bound, not overhead-bound**.
-The "bigger res = better fps" paradox is gone, because the fixed overhead it
-exposed is gone. Frames verified complete (0 unrendered pixels) and animating.
-
-Real-time, fully raytraced, live in memory, no disk, no respawn — at 77fps.
+Phase 2 floors (64×36, fixed overhead): 9.85 → **2.34 ms**.
+Real scenes @320×180: spin **107 fps**, bee_world **91 fps**, fd-game arena
+scene **141 fps daemon / 138 fps end-to-end through the socket** (game/
+selftest). ROADMAP Phase 2 gate (sustained 60 fps @320×180 on a real scene):
+**met**. Output verified bit-identical pre/post (md5 of deterministic selftest).
 
 ## What's left (further optimization, not blockers)
 
-- Thread-pool + scene still rebuilt per frame; now cheap relative to the trace,
-  but making them resident (the .kkrieger lesson) is the next gain for heavy scenes.
-- Antialiasing is off for speed; a cheap temporal AA would clean edges.
+- Scene database + bounding hierarchy still rebuilt per frame (parse is ~1-1.5ms
+  for our scenes; empty-scene pipeline floor is now 2.3ms). Making the scene
+  resident with transform-only mutation + two-level BVH (GAME_ENGINE.md §2) is
+  the remaining .kkrieger step — it matters once scenes get heavy, not before.
+- Antialiasing is off for speed; temporal AA via analytic motion vectors is the
+  planned cleanup (GAME_ENGINE.md §5).
 - DLSS-style temporal reprojection on the 5070 for 4K/heavy scenes (Phase 3).
 
 ## The .kkrieger lesson (Phase 2 direction)
