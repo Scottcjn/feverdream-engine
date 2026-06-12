@@ -30,3 +30,12 @@ Two hard-won POV rules (both bit this project):
 
 The walk-cycle driver that originally animated him interactively (before the
 daemon/game split existed) is preserved at `../../daemon/walk.cpp`.
+
+## Level sandbox (community levels)
+
+Levels run inside the game process, so the Lua state is stripped before a
+script executes: `os`, `io`, `package`/`require`, `load`/`loadfile`/`dofile`/
+`loadstring`, and `debug` are all removed. A level gets `math`, `string`,
+`table`, the base iterators, `print`, and the game API (`play_sound`, the
+documented globals). If your level needs anything else, it doesn't — and a PR
+that tries will fail the suite: `test_sandbox.lua` asserts the banned globals are absent and the allowed kit works.

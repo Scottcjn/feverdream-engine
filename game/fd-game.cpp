@@ -364,6 +364,18 @@ static bool load_script(const char* path) {
 
     g_L = luaL_newstate();
     luaL_openlibs(g_L);
+    // SANDBOX: levels are community content (bounty #14019) running inside
+    // the game process. A level needs math/string/table and our API — it
+    // never needs to run programs, touch files, load chunks, or poke C.
+    // Strip those capabilities before the script gets a single instruction.
+    static const char* banned[] = {
+        "os", "io", "package", "require", "dofile", "loadfile",
+        "load", "loadstring", "debug", NULL
+    };
+    for (int bi = 0; banned[bi]; ++bi) {
+        lua_pushnil(g_L);
+        lua_setglobal(g_L, banned[bi]);
+    }
     lua_pushcfunction(g_L, l_play_sound);
     lua_setglobal(g_L, "play_sound");
     if (luaL_dofile(g_L, path) != LUA_OK) {
