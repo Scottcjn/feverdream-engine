@@ -11,7 +11,7 @@
 -- Grab the STAR to go fast and fearless. The heart? You may need it.
 
 game_title = "Golden Acorn 5: Windmill Pass"
--- the true TRUE end of the quest
+next_level = "chunkins_hazelnut_bridges.lua"   -- community world 6!
 
 config = {
   speed = 5.0, turn_rate = 3.0, step_rate = 12.0,

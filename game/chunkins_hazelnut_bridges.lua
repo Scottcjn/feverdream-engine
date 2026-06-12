@@ -9,12 +9,14 @@
 -- rails. The first acorn is directly on the +Z walk lane for headless
 -- gametest reachability.
 
-game_title = "Golden Acorn 5: Hazelnut Bridges"
-next_level = "chunkins1.lua"
+game_title = "Golden Acorn 6: Hazelnut Bridges"
+-- terminal: winning Hazelnut Bridges completes the quest
 
 config = {
   speed = 4.3, turn_rate = 2.8, step_rate = 11.0,
   gravity = -26.0, jump_v = 9.8, player_radius = 0.45,
+  step_up = 0.58,   -- integration: islands (h .40/.55) are meant to be walkable;
+                    -- rails (top .95 from deck .35) stay walls
 }
 
 boxes = {
@@ -47,7 +49,7 @@ boxes = {
   { cx =  4.2, cz =  12.4, hx = 0.45, hz = 0.55, h = 0.9, cy = 0, dyn = true, shape = "baddie" },
 
   -- six acorns. #1 is on the +Z lane for ./fd-game --gametest reachability.
-  { cx =  0.0, cz = -9.6, hx = 0.26, hz = 0.26, h = 0.5, r = 0.78, g = 0.56, dyn = true, solid = false, shape = "acorn" },
+  { cx =  0.0, cz =  2.6, hx = 0.26, hz = 0.26, h = 0.5, r = 0.78, g = 0.56, dyn = true, solid = false, shape = "acorn" }, -- integration: moved to the FORWARD +Z lane (was -9.6, behind spawn) for the headless gametest
   { cx = -4.0, cz = -11.0, hx = 0.26, hz = 0.26, h = 0.5, r = 0.78, g = 0.56, dyn = true, solid = false, shape = "acorn" },
   { cx =  0.0, cz = -3.4, hx = 0.26, hz = 0.26, h = 0.5, r = 0.78, g = 0.56, dyn = true, solid = false, shape = "acorn" },
   { cx =  4.0, cz =  1.0, hx = 0.26, hz = 0.26, h = 0.5, r = 0.78, g = 0.56, dyn = true, solid = false, shape = "acorn" },
@@ -60,10 +62,10 @@ local BADDIES = {
   { box = boxes[18], speed = 1.10, home = {x= 4.2, z=12.4}, alive = true, respawn = 8.0 },
 }
 local ACORNS = { boxes[19], boxes[20], boxes[21], boxes[22], boxes[23], boxes[24] }
-local base_y = { 0.70, 1.10, 0.80, 1.20, 0.95, 1.35 }
+local base_y = { 0.85, 1.05, 0.55, 1.20, 0.95, 1.35 }   -- integration: #2,#3 into the collect window
 
 game_score, game_lives, game_state = 0, 3, "playing"
-game_world = 5
+game_world = 6
 local collected, invuln = {}, 0
 
 local function run_baddies(t, dt, player)
@@ -125,4 +127,4 @@ function on_tick(t, dt, player)
   end
 end
 
-worlds = { "chunkins1.lua", "chunkins2.lua", "chunkins3.lua", "chunkins4.lua", "chunkins_hazelnut_bridges.lua" }
+worlds = { "chunkins1.lua", "chunkins2.lua", "chunkins3.lua", "chunkins4.lua", "chunkins5.lua", "chunkins_hazelnut_bridges.lua" }
