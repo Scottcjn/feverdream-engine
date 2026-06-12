@@ -4,3 +4,6 @@ daemon/live
 daemon/*.o
 *.ppm
 *.png
+daemon/walk
+daemon/fd-daemon
+daemon/__pycache__/

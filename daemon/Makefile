@@ -24,7 +24,12 @@ live: live.cpp $(POV)/vfe/libvfe.a $(POV)/source/libpovray.a
 walk: walk.cpp $(POV)/vfe/libvfe.a $(POV)/source/libpovray.a
 	$(CXX) $(CXXFLAGS) -std=c++11 -o $@ walk.cpp $(ARCHIVES) $(LIBS) -lSDL2
 
-all: resident live walk
+# the socket render daemon (PROTOCOL.md) — the AGPL side of the firewall;
+# game processes talk to it via fd_client.py / their own protocol client
+fd-daemon: fd-daemon.cpp $(POV)/vfe/libvfe.a $(POV)/source/libpovray.a
+	$(CXX) $(CXXFLAGS) -std=c++11 -o $@ fd-daemon.cpp $(ARCHIVES) $(LIBS)
+
+all: resident live walk fd-daemon
 
 clean:
-	rm -f resident live *.ppm *.png
+	rm -f resident live walk fd-daemon *.ppm *.png
