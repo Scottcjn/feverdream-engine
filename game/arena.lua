@@ -28,10 +28,11 @@ boxes = {
   { cx = -2.0, cz = -5.0, hx = 0.9, hz = 0.9, h = 1.2, r = 0.95, g = 0.30, dyn = true },
 }
 
+local patrol = boxes[#boxes]   -- the dyn box above, not a hard-coded index
 local last_dir = 1
 function on_tick(t, dt, player)
   -- patrol: ±4 units of travel on a 6-second cycle, pure function of sim time
-  boxes[5].cx = -2.0 + 4.0 * math.sin(t * math.pi / 3.0)
+  patrol.cx = -2.0 + 4.0 * math.sin(t * math.pi / 3.0)
   -- blip when the patrol reverses — script-triggered audio via play_sound()
   local dir = math.cos(t * math.pi / 3.0) >= 0 and 1 or -1
   if dir ~= last_dir then play_sound("blip", 0.5) end

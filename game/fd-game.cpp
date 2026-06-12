@@ -80,8 +80,16 @@ public:
         auto f32 = [&](float v){ uint8_t t[4]; memcpy(t, &v, 4); b.insert(b.end(), t, t + 4); };
         u16((uint16_t)w); u16((uint16_t)h); f32(0.0f);        // clock unused: host owns time
         b.push_back(0);                                       // aa off
-        b.push_back((uint8_t)decls.size());
+        // mirror the daemon's whitelist limit: a >32-char name would truncate
+        // on the wire and poison the rest of the declare list
+        size_t nd = 0;
+        for (const Declare& d : decls) if (d.name.size() <= 32) nd++;
+        b.push_back((uint8_t)nd);
         for (const Declare& d : decls) {
+            if (d.name.size() > 32) {
+                fprintf(stderr, "fd-game: declare '%s' too long — skipped\n", d.name.c_str());
+                continue;
+            }
             b.push_back((uint8_t)d.name.size());
             b.insert(b.end(), d.name.begin(), d.name.end());
             f32(d.value);
@@ -97,9 +105,12 @@ public:
         if (type != T_FRAME || p.size() < 12) return false;
         memcpy(&fb_w, p.data(), 4); memcpy(&fb_h, p.data() + 4, 4);
         memcpy(&frame_us, p.data() + 8, 4);
+        // a FRAME without the buffer (daemon-side dimension transition) is a
+        // soft miss — keep showing the previous frame rather than aborting
         if (flags & FLAG_WANT_FB) fb.assign(p.begin() + 12, p.end());
-        return fb.size() == (size_t)fb_w * fb_h * 4;
+        return true;
     }
+    bool frame_fits(int w, int h) const { return fb.size() == (size_t)w * h * 4; }
 
     void shutdown() { send(T_SHUTDOWN, 0, NULL, 0); }
 
@@ -124,7 +135,7 @@ private:
         if (!io_full(false, h, 8) || h[0] != FD_MAGIC || h[1] != FD_VERSION) return false;
         *type = h[2]; *flags = h[3];
         uint32_t len = (uint32_t)h[4] | h[5] << 8 | h[6] << 16 | (uint32_t)h[7] << 24;
-        if (len > 64u * 1024 * 1024) return false;
+        if (len > 80u * 1024 * 1024) return false;   // > max 4096x4096 RGBA reply
         p.resize(len);
         return !len || io_full(false, p.data(), len);
     }
@@ -181,12 +192,10 @@ static lua_State* g_L = NULL;
 
 // play_sound("jump"|"land"|"step"|"bump"|"blip" [, gain]) — script audio hook
 static int l_play_sound(lua_State* L) {
-    static const char* names[FdAudio::SOUND_COUNT] =
-        { "jump", "land", "step", "bump", "blip" };
     const char* want = luaL_checkstring(L, 1);
     float gain = (float)luaL_optnumber(L, 2, 1.0);
     for (int i = 0; i < FdAudio::SOUND_COUNT; ++i)
-        if (strcmp(want, names[i]) == 0) {
+        if (strcmp(want, FdAudio::name(i)) == 0) {
             g_audio.play((FdAudio::Sound)i, gain);
             return 0;
         }
@@ -215,21 +224,12 @@ static bool load_script(const char* path) {
         return false;
     }
 
-    lua_getglobal(g_L, "config");
-    if (lua_istable(g_L, -1)) {
-        SPEED     = lua_field_num(g_L, "speed", SPEED);
-        TURN_RATE = lua_field_num(g_L, "turn_rate", TURN_RATE);
-        STEP_RATE = lua_field_num(g_L, "step_rate", STEP_RATE);
-        GRAV      = lua_field_num(g_L, "gravity", GRAV);
-        JUMP_V    = lua_field_num(g_L, "jump_v", JUMP_V);
-        P_RADIUS  = lua_field_num(g_L, "player_radius", P_RADIUS);
-    }
-    lua_pop(g_L, 1);
-
+    // boxes first: a script with no world is rejected WHOLE — close the state
+    // so its on_tick can't keep running against the built-in fallback arena
     lua_getglobal(g_L, "boxes");
     if (!lua_istable(g_L, -1)) {
-        fprintf(stderr, "fd-game: %s defines no `boxes` table\n", path);
-        lua_pop(g_L, 1);
+        fprintf(stderr, "fd-game: %s defines no `boxes` table — script unloaded\n", path);
+        lua_close(g_L); g_L = NULL;
         return false;
     }
     g_world.clear();
@@ -248,6 +248,17 @@ static bool load_script(const char* path) {
             g_world.push_back(b);
         }
         lua_pop(g_L, 1);
+    }
+    lua_pop(g_L, 1);
+
+    lua_getglobal(g_L, "config");
+    if (lua_istable(g_L, -1)) {
+        SPEED     = lua_field_num(g_L, "speed", SPEED);
+        TURN_RATE = lua_field_num(g_L, "turn_rate", TURN_RATE);
+        STEP_RATE = lua_field_num(g_L, "step_rate", STEP_RATE);
+        GRAV      = lua_field_num(g_L, "gravity", GRAV);
+        JUMP_V    = lua_field_num(g_L, "jump_v", JUMP_V);
+        P_RADIUS  = lua_field_num(g_L, "player_radius", P_RADIUS);
     }
     lua_pop(g_L, 1);
     return true;
@@ -474,7 +485,7 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
 
     Player p;
     const float dt = 1.0f / SIM_HZ;
-    bool running = true;
+    bool running = true, jump_pending = false;   // latched until a sim step consumes it
     double prev = now_s(), acc = 0, simt = 0, fpsT = prev; int fpsN = 0;
     printf("fd-game: WASD/arrows move+turn, SPACE jump, ESC quit\n");
     while (running) {
@@ -482,29 +493,34 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
         if (ft > 0.25) ft = 0.25;
         acc += ft;
 
-        SDL_Event e; bool jump = false;
+        SDL_Event e;
         while (SDL_PollEvent(&e)) {
             if (e.type == SDL_QUIT) running = false;
             else if (e.type == SDL_KEYDOWN) {
                 if (e.key.keysym.sym == SDLK_ESCAPE) running = false;
-                if (e.key.keysym.sym == SDLK_SPACE)  jump = true;
+                if (e.key.keysym.sym == SDLK_SPACE)  jump_pending = true;
             }
         }
         const Uint8* k = SDL_GetKeyboardState(NULL);
-        Input in; in.jump = jump;
+        Input in;
         if (k[SDL_SCANCODE_UP]    || k[SDL_SCANCODE_W]) in.move += 1;
         if (k[SDL_SCANCODE_DOWN]  || k[SDL_SCANCODE_S]) in.move -= 1;
         if (k[SDL_SCANCODE_LEFT]  || k[SDL_SCANCODE_A]) in.turn -= 1;
         if (k[SDL_SCANCODE_RIGHT] || k[SDL_SCANCODE_D]) in.turn += 1;
 
         script_tick(simt, ft, p);
-        while (acc >= dt) { simulate(p, in, dt); acc -= dt; simt += dt; in.jump = false; }
+        while (acc >= dt) {
+            in.jump = jump_pending; jump_pending = false;   // consumed by one step only
+            simulate(p, in, dt); acc -= dt; simt += dt;
+        }
 
         if (!r.render(rW, rH, declares_for(p))) { fprintf(stderr, "render failed\n"); break; }
-        SDL_UpdateTexture(tex, NULL, r.fb.data(), rW * 4);
-        SDL_RenderClear(ren);
-        SDL_RenderCopy(ren, tex, NULL, NULL);
-        SDL_RenderPresent(ren);
+        if (r.frame_fits(rW, rH)) {              // soft miss: keep last frame
+            SDL_UpdateTexture(tex, NULL, r.fb.data(), rW * 4);
+            SDL_RenderClear(ren);
+            SDL_RenderCopy(ren, tex, NULL, NULL);
+            SDL_RenderPresent(ren);
+        }
 
         if (++fpsN >= 10) {
             char ti[128];
@@ -520,7 +536,9 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
 
 int main(int argc, char** argv) {
     bool st = argc > 1 && strcmp(argv[1], "--selftest") == 0;
-    int frames = st && argc > 2 ? atoi(argv[2]) : 90;
+    // 180 default: the walk phase must REACH the wall for the bump assertion
+    // (90 frames ends 1.2 units short — tri-brain caught the impossible default)
+    int frames = st && argc > 2 ? atoi(argv[2]) : 180;
     const char* sock   = st ? (argc > 3 ? argv[3] : "/tmp/feverdream.sock")
                             : (argc > 1 ? argv[1] : "/tmp/feverdream.sock");
     const char* script = st ? (argc > 4 ? argv[4] : "arena.lua")
@@ -537,8 +555,10 @@ int main(int argc, char** argv) {
     }
 
     // optional: a silent box is a playable box (triggers still count headless)
-    printf("fd-game: audio %s\n", g_audio.init() ? "open (procedural synth, 5 sfx)"
-                                                 : "unavailable — running silent");
+    bool snd = g_audio.init();
+    printf("fd-game: audio %s — %d/%d sfx from assets, rest synthesized\n",
+           snd ? "open" : "unavailable (running silent)",
+           g_audio.loaded(), (int)FdAudio::SOUND_COUNT);
 
     FdRenderer r;
     if (!r.connect_to(sock)) {

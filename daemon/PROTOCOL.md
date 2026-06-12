@@ -78,3 +78,6 @@ without breaking v0 clients.
   version + bounded length before reading payload; on violation, drain + reset.
 - **Health**: a watchdog PINGs; on miss → restart the daemon (resident processes
   lose the per-frame crash isolation the batch path has).
+- **Reconnect = fresh session.** Scene state is per-connection: a new client
+  always starts with no scene loaded and MUST send SCENE_FULL before RENDER,
+  even though the previous client's scene file may still exist daemon-side.

@@ -1,57 +1,59 @@
 diff --git a/source/backend/scene/scene.cpp b/source/backend/scene/scene.cpp
-index 3aa48ec..3f2b39c 100644
+index 3aa48ec..109814f 100644
 --- a/source/backend/scene/scene.cpp
 +++ b/source/backend/scene/scene.cpp
-@@ -688,7 +688,10 @@ void Scene::ParserControlThread()
+@@ -688,7 +688,14 @@ void Scene::ParserControlThread()
  		if(stopRequsted == false)
  		{
  			boost::thread::yield();
 -			Delay(10);
 +			// Feverdream: was Delay(10), then Delay(1). At ~90 fps even a 1ms
 +			// poll is ~9% of the frame; 0.2ms keeps the driver responsive
-+			// without busy-spinning.
++			// without busy-spinning. POSIX-only fast path; others keep Delay.
++#if defined(__unix__) || defined(__APPLE__)
 +			{ struct timespec fdts = {0, 200000}; nanosleep(&fdts, NULL); }
++#else
++			Delay(1);
++#endif
  		}
  	}
  }
 diff --git a/source/backend/scene/view.cpp b/source/backend/scene/view.cpp
-index 962a089..cf4830b 100644
+index 962a089..3b9c11e 100644
 --- a/source/backend/scene/view.cpp
 +++ b/source/backend/scene/view.cpp
-@@ -681,9 +681,19 @@ void View::StartRender(POVMS_Object& renderOptions)
+@@ -681,6 +681,13 @@ void View::StartRender(POVMS_Object& renderOptions)
  	bool highReproducibility = false;
  	shared_ptr<std::set<unsigned int> > blockskiplist(new std::set<unsigned int>());
  
++#if defined(__unix__) || defined(__APPLE__)
 +	if (getenv("FD_TRACE_STATES")) {
 +		struct timespec _ts; clock_gettime(CLOCK_MONOTONIC, &_ts);
 +		fprintf(stderr, "  [view  %ld.%06ld] StartRender entry\n", (long)_ts.tv_sec, _ts.tv_nsec/1000);
 +	}
++#endif
 +
  	if(renderControlThread == NULL)
  		renderControlThread = Task::NewBoostThread(boost::bind(&View::RenderControlThread, this), POV_THREAD_STACK_SIZE);
  
-+	if (getenv("FD_TRACE_STATES")) {
-+		struct timespec _ts; clock_gettime(CLOCK_MONOTONIC, &_ts);
-+		fprintf(stderr, "  [view  %ld.%06ld] control thread spawned\n", (long)_ts.tv_sec, _ts.tv_nsec/1000);
-+	}
-+
- 	viewData.qualitySettings.Quality = clip(renderOptions.TryGetInt(kPOVAttrib_Quality, 9), 0, 9);
- 	viewData.qualitySettings.Quality_Flags = QualityValues[viewData.qualitySettings.Quality];
- 
-@@ -1401,7 +1411,10 @@ void View::RenderControlThread()
+@@ -1401,7 +1408,14 @@ void View::RenderControlThread()
  		if(stopRequsted == false)
  		{
  			boost::thread::yield();
 -			Delay(50);
 +			// Feverdream: was Delay(50), then Delay(1). At ~90 fps even a 1ms
 +			// poll is ~9% of the frame; 0.2ms keeps the driver responsive
-+			// without busy-spinning.
++			// without busy-spinning. POSIX-only fast path; others keep Delay.
++#if defined(__unix__) || defined(__APPLE__)
 +			{ struct timespec fdts = {0, 200000}; nanosleep(&fdts, NULL); }
++#else
++			Delay(1);
++#endif
  		}
  	}
  }
 diff --git a/source/backend/support/randomsequences.cpp b/source/backend/support/randomsequences.cpp
-index 55f250d..fa0b4b3 100644
+index 55f250d..735689f 100644
 --- a/source/backend/support/randomsequences.cpp
 +++ b/source/backend/support/randomsequences.cpp
 @@ -107,8 +107,28 @@ DBL POV_rand(unsigned int& next_rand)
@@ -83,13 +85,14 @@ index 55f250d..fa0b4b3 100644
  	mt19937 generator;
  	uniform_int<int> distribution(minval, maxval);
  	variate_generator<mt19937, uniform_int<int> > sequence(generator, distribution);
-@@ -117,22 +137,51 @@ vector<int> RandomInts(int minval, int maxval, size_t count)
+@@ -117,22 +137,56 @@ vector<int> RandomInts(int minval, int maxval, size_t count)
  	for(size_t i = 0; i < count; i++)
  		rands[i] = sequence();
  
 +	{
 +		boost::mutex::scoped_lock lock(cacheMutex);
-+		cache[key] = rands;
++		if(cache.size() < 64)
++			cache[key] = rands;
 +	}
 +
  	return rands;
@@ -123,8 +126,12 @@ index 55f250d..fa0b4b3 100644
 +		(*rands)[i] = sequence();
 +
 +	{
++		// cap the memo (tri-brain: a long-lived daemon rendering arbitrary
++		// scenes must not grow RSS without bound). Distinct keys are scene
++		// constants in practice, so 64 is generous; beyond it, skip caching.
 +		boost::mutex::scoped_lock lock(cacheMutex);
-+		cache[key] = rands;
++		if(cache.size() < 64)
++			cache[key] = rands;
 +	}
  
  	return rands;
@@ -138,7 +145,7 @@ index 55f250d..fa0b4b3 100644
  RandomIntSequence::RandomIntSequence(int minval, int maxval, size_t count) :
  	values(RandomInts(minval, maxval, count))
  {
-@@ -172,7 +221,7 @@ void RandomIntSequence::Generator::SetSeed(size_t seedindex)
+@@ -172,7 +226,7 @@ void RandomIntSequence::Generator::SetSeed(size_t seedindex)
  }
  
  RandomDoubleSequence::RandomDoubleSequence(double minval, double maxval, size_t count) :
@@ -147,7 +154,7 @@ index 55f250d..fa0b4b3 100644
  {
  }
  
-@@ -184,13 +233,13 @@ RandomDoubleSequence::Generator::Generator(RandomDoubleSequence *seq, size_t see
+@@ -184,13 +238,13 @@ RandomDoubleSequence::Generator::Generator(RandomDoubleSequence *seq, size_t see
  
  double RandomDoubleSequence::operator()(size_t seedindex)
  {
@@ -164,7 +171,7 @@ index 55f250d..fa0b4b3 100644
  	return (*sequence)(index);
  }
  
-@@ -206,7 +255,7 @@ size_t RandomDoubleSequence::Generator::GetSeed() const
+@@ -206,7 +260,7 @@ size_t RandomDoubleSequence::Generator::GetSeed() const
  
  void RandomDoubleSequence::Generator::SetSeed(size_t seedindex)
  {
@@ -192,7 +199,7 @@ index f0402ef..e8b4495 100644
  
  
 diff --git a/source/backend/support/task.cpp b/source/backend/support/task.cpp
-index c8168aa..e769d88 100644
+index c8168aa..2ae272f 100644
 --- a/source/backend/support/task.cpp
 +++ b/source/backend/support/task.cpp
 @@ -46,6 +46,9 @@
@@ -205,7 +212,7 @@ index c8168aa..e769d88 100644
  namespace pov
  {
  
-@@ -53,6 +56,108 @@ using namespace pov_base;
+@@ -53,6 +56,111 @@ using namespace pov_base;
  
  IMPLEMENT_THREAD_LOCAL_PTR(Task::TaskData, Task::taskDataPtr, TaskDataCleanup);
  
@@ -241,8 +248,11 @@ index c8168aa..e769d88 100644
 +	public:
 +		static FdTaskPool& Instance()
 +		{
-+			static FdTaskPool pool;
-+			return pool;
++			// intentionally leaked: workers block on the CV for the process
++			// lifetime, so a static-destruction teardown would race them
++			// (tri-brain review finding). The OS reclaims at exit.
++			static FdTaskPool *pool = new FdTaskPool();
++			return *pool;
 +		}
 +
 +		FdJob *Submit(const boost::function0<void>& fn)
@@ -314,7 +324,7 @@ index c8168aa..e769d88 100644
  Task::Task(TaskData *td, const boost::function1<void, Exception&>& f) :
  	taskData(td),
  	fatalErrorHandler(f),
-@@ -64,6 +169,7 @@ Task::Task(TaskData *td, const boost::function1<void, Exception&>& f) :
+@@ -64,6 +172,7 @@ Task::Task(TaskData *td, const boost::function1<void, Exception&>& f) :
  	realTime(-1),
  	cpuTime(-1),
  	taskThread(NULL),
@@ -322,7 +332,7 @@ index c8168aa..e769d88 100644
  	povmsContext(NULL)
  {
  	if (td == NULL)
-@@ -101,8 +207,13 @@ POV_LONG Task::ConsumedCPUTime() const
+@@ -101,8 +210,13 @@ POV_LONG Task::ConsumedCPUTime() const
  
  void Task::Start(const boost::function0<void>& completion)
  {
@@ -338,7 +348,7 @@ index c8168aa..e769d88 100644
  }
  
  void Task::RequestStop()
-@@ -120,6 +231,12 @@ void Task::Stop()
+@@ -120,6 +234,12 @@ void Task::Stop()
  		delete taskThread;
  		taskThread = NULL;
  	}
@@ -402,18 +412,20 @@ index e9e7063..a01e578 100644
  
      if (m_Count == 0)
 diff --git a/vfe/vfesession.cpp b/vfe/vfesession.cpp
-index 4e99628..04b35af 100644
+index 4e99628..03f8864 100644
 --- a/vfe/vfesession.cpp
 +++ b/vfe/vfesession.cpp
-@@ -504,6 +504,11 @@ bool vfeSession::ProcessFrontend (void)
+@@ -504,6 +504,13 @@ bool vfeSession::ProcessFrontend (void)
  
  void vfeSession::StateChanged (pov_frontend::State NewState)
  {
++#if defined(__unix__) || defined(__APPLE__)
 +  if (getenv("FD_TRACE_STATES")) {
 +    struct timespec _ts; clock_gettime(CLOCK_MONOTONIC, &_ts);
 +    fprintf(stderr, "  [state %ld.%06ld] %d -> %d\n",
 +            (long)_ts.tv_sec, _ts.tv_nsec/1000, (int)m_BackendState, (int)NewState);
 +  }
++#endif
    if (NewState == kReady || NewState == kStopping)
      if (m_BackendState > kReady)
        RenderStopped () ;

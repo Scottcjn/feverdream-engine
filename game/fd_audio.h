@@ -23,9 +23,16 @@ class FdAudio {
 public:
     enum Sound { JUMP, LAND, STEP, BUMP, BLIP, SOUND_COUNT };
 
-    // synthesize all effects, then try to open a device; silent failure is OK
-    bool init() {
+    static const char* name(int s) {
+        static const char* n[SOUND_COUNT] = { "jump", "land", "step", "bump", "blip" };
+        return (s >= 0 && s < SOUND_COUNT) ? n[s] : NULL;
+    }
+
+    // synthesize all effects, prefer CC0 wav assets when present (see
+    // assets/ASSETS.md), then try to open a device; silent failure is OK
+    bool init(const char* assets_dir = "assets") {
         synth_all();
+        load_overrides(assets_dir);
         if (SDL_InitSubSystem(SDL_INIT_AUDIO) != 0) return false;
         SDL_AudioSpec want, have;
         SDL_zero(want);
@@ -63,6 +70,7 @@ public:
     }
 
     bool device_ok() const { return dev_ != 0; }
+    int loaded() const { return loaded_; }   // sfx that came from wav assets
     long triggers[SOUND_COUNT] = {0};   // per-sound trigger counts (always)
 
 private:
@@ -77,6 +85,7 @@ private:
     };
 
     SDL_AudioDeviceID dev_ = 0;
+    int loaded_ = 0;                   // how many sfx came from wav assets
     std::vector<int16_t> buf_[SOUND_COUNT];
     Voice voices_[NVOICES];
     uint32_t noise_ = 0x46445541;      // deterministic noise seed ("FDAU")
@@ -111,6 +120,27 @@ private:
         synth(STEP, 0.04f, 150,  110, 0.2f, 0.5f, 3.0f);  // short noisy tick
         synth(BUMP, 0.09f, 130,   70, 0.6f, 0.4f, 2.2f);  // wall knock
         synth(BLIP, 0.10f, 660,  880, 0.6f, 0.0f, 2.0f);  // script-triggerable
+    }
+
+    // assets/sfx/<name>.wav replaces the synth recipe when present and in the
+    // mixer's native format (s16 mono 22050); anything else keeps the synth
+    void load_overrides(const char* dir) {
+        if (!dir || !*dir) return;
+        char path[256];
+        for (int s = 0; s < SOUND_COUNT; ++s) {
+            snprintf(path, sizeof path, "%s/sfx/%s.wav", dir, name(s));
+            SDL_AudioSpec spec; Uint8* data = NULL; Uint32 len = 0;
+            if (SDL_LoadWAV(path, &spec, &data, &len) == NULL) continue;
+            if (spec.freq == RATE && spec.format == AUDIO_S16SYS &&
+                spec.channels == 1 && len >= 2) {
+                buf_[s].assign((const int16_t*)data, (const int16_t*)(data + (len & ~1u)));
+                loaded_++;
+            } else {
+                SDL_Log("fd_audio: %s wrong format (want s16 mono %d) — using synth",
+                        path, RATE);
+            }
+            SDL_FreeWAV(data);
+        }
     }
 
     void mix(int16_t* out, int count) {

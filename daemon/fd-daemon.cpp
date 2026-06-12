@@ -289,10 +289,15 @@ int main(int argc, char** argv)
 
     signal(SIGPIPE, SIG_IGN);
 
-    // scene file lives in shm: SCENE_FULL rewrites it, every RENDER re-parses it
+    // scene file lives in shm: SCENE_FULL rewrites it, every RENDER re-parses
+    // it. mkstemps gives an unpredictable name created O_EXCL — a pre-planted
+    // symlink at a guessable path can't redirect our writes (tri-brain review)
     char scene_path[128];
-    snprintf(scene_path, sizeof scene_path, "%s/fd-scene-%d.pov",
-             access("/dev/shm", W_OK) == 0 ? "/dev/shm" : "/tmp", getpid());
+    snprintf(scene_path, sizeof scene_path, "%s/fd-scene-XXXXXX.pov",
+             access("/dev/shm", W_OK) == 0 ? "/dev/shm" : "/tmp");
+    int scene_fd = mkstemps(scene_path, 4);
+    if (scene_fd < 0) { perror("mkstemps"); return 1; }
+    close(scene_fd);   // POV opens by path; the name + 0600 mode are what matter
 
     vfeUnixSession* session = new vfeUnixSession();
     if (session->Initialize(NULL, NULL) != vfeNoError) {
@@ -307,7 +312,17 @@ int main(int argc, char** argv)
     memset(&addr, 0, sizeof addr);
     addr.sun_family = AF_UNIX;
     snprintf(addr.sun_path, sizeof addr.sun_path, "%s", sock_path.c_str());
-    unlink(sock_path.c_str());
+    // only ever unlink an actual socket — a typo'd or hostile path must not
+    // delete an arbitrary file (tri-brain review)
+    struct stat st;
+    if (lstat(sock_path.c_str(), &st) == 0) {
+        if (!S_ISSOCK(st.st_mode)) {
+            fprintf(stderr, "fd-daemon: %s exists and is not a socket — refusing\n",
+                    sock_path.c_str());
+            return 1;
+        }
+        unlink(sock_path.c_str());
+    }
     if (bind(sfd, (struct sockaddr*)&addr, sizeof addr) < 0) { perror("bind"); return 1; }
     chmod(sock_path.c_str(), 0600);        // local user only
     if (listen(sfd, 1) < 0) { perror("listen"); return 1; }
