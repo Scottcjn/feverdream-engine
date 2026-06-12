@@ -72,8 +72,8 @@ union {
   sphere { 0, 0.09 scale <0.8,1.3,0.6> translate <-0.15,1.90,0.04> pigment {FUR} }
   sphere { 0, 0.09 scale <0.8,1.3,0.6> translate < 0.15,1.90,0.04> pigment {FUR} }
   // little front paws, held up in the classic nibble pose
-  sphere { <-0.21,0.82,0.30>, 0.095 pigment {FUR} finish { phong 0.5 } }
-  sphere { < 0.21,0.82,0.30>, 0.095 pigment {FUR} finish { phong 0.5 } }
+  sphere { <-0.46,0.86,0.22>, 0.10 pigment {FUR} finish { phong 0.5 } }
+  sphere { < 0.46,0.86,0.22>, 0.10 pigment {FUR} finish { phong 0.5 } }
   box { <-0.09,-0.55,-0.09>,<0.09,0,0.09> translate <-0.17,0.55,0> pigment {FUR} finish { phong 0.5 } }
   box { <-0.09,-0.55,-0.09>,<0.09,0,0.09> translate < 0.17,0.55,0> pigment {FUR} finish { phong 0.5 } }
   union {
