@@ -1,5 +1,6 @@
 -- SPDX-License-Identifier: MIT
--- crate_climb.lua — CRATE CLIMB: a gentle platformer for small adventurers.
+-- crate_climb.lua — CHUNKINS' CRATE CLIMB: a gentle platformer for small
+-- adventurers. Chunkins the squirrel collects acorns.
 --
 -- Climb the crate staircase, ride the bobbing elevator to the high ledge,
 -- and collect all 4 gold stars. Nothing chases you, nothing hurts you,
@@ -41,10 +42,10 @@ boxes = {
 
   -- 4 gold stars: one on the grass (warm-up), staircase top, elevator
   -- summit ledge, and high ledge
-  { cx =   0, cz =  2.0, hx = 0.26, hz = 0.26, h = 0.5, r = 1.0, g = 0.85, dyn = true, solid = false },
-  { cx =  5.2, cz = 6.4, hx = 0.26, hz = 0.26, h = 0.5, r = 1.0, g = 0.85, dyn = true, solid = false },
-  { cx = -5.0, cz = -5.0, hx = 0.26, hz = 0.26, h = 0.5, r = 1.0, g = 0.85, dyn = true, solid = false },
-  { cx = 12.2, cz =  9.5, hx = 0.26, hz = 0.26, h = 0.5, r = 1.0, g = 0.85, dyn = true, solid = false },
+  { cx =   0, cz =  2.0, hx = 0.26, hz = 0.26, h = 0.5, r = 1.0, g = 0.85, dyn = true, solid = false, shape = "acorn" },
+  { cx =  5.2, cz = 6.4, hx = 0.26, hz = 0.26, h = 0.5, r = 1.0, g = 0.85, dyn = true, solid = false, shape = "acorn" },
+  { cx = -5.0, cz = -5.0, hx = 0.26, hz = 0.26, h = 0.5, r = 1.0, g = 0.85, dyn = true, solid = false, shape = "acorn" },
+  { cx = 12.2, cz =  9.5, hx = 0.26, hz = 0.26, h = 0.5, r = 1.0, g = 0.85, dyn = true, solid = false, shape = "acorn" },
 }
 
 local ELEV   = boxes[11]
@@ -82,3 +83,5 @@ function on_tick(t, dt, player)
     end
   end
 end
+
+game_title = "Chunkins' Crate Climb"

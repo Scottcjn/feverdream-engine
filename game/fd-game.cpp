@@ -197,7 +197,8 @@ private:
 };
 
 // ============================ world + tuning =================================
-struct Aabb { float cx, cz, hx, hz, h; bool dyn; float r, g; float cy; bool solid; };
+struct Aabb { float cx, cz, hx, hz, h; bool dyn; float r, g; float cy; bool solid;
+              bool acorn; };   // shape="acorn" in the script (else a box)
 static std::vector<Aabb> g_world;
 static float P_RADIUS = 0.45f;
 
@@ -271,6 +272,7 @@ static float ground_height(float px, float pz, float feet, float tol) {
 // which the host reads back into BOTH the collision world and the renderer
 // declares. Player table is read-only this round.
 static lua_State* g_L = NULL;
+static char g_title[64] = "fd-game";    // scripts override via game_title
 
 // play_sound("jump"|"land"|"step"|"bump"|"blip" [, gain]) — script audio hook
 static int l_play_sound(lua_State* L) {
@@ -331,6 +333,10 @@ static bool load_script(const char* path) {
             lua_getfield(g_L, -1, "solid");          // default true; collectibles
             b.solid = lua_isnil(g_L, -1) || lua_toboolean(g_L, -1) != 0;
             lua_pop(g_L, 1);
+            lua_getfield(g_L, -1, "shape");          // "acorn" | default box
+            b.acorn = lua_isstring(g_L, -1) &&
+                      strcmp(lua_tostring(g_L, -1), "acorn") == 0;
+            lua_pop(g_L, 1);
             g_world.push_back(b);
         }
         lua_pop(g_L, 1);
@@ -348,6 +354,12 @@ static bool load_script(const char* path) {
         STEP_UP   = lua_field_num(g_L, "step_up", STEP_UP);
         HEAD_ROOM = lua_field_num(g_L, "head_room", HEAD_ROOM);
     }
+    lua_pop(g_L, 1);
+
+    snprintf(g_title, sizeof g_title, "fd-game");    // reset before each load
+    lua_getglobal(g_L, "game_title");
+    if (lua_isstring(g_L, -1))
+        snprintf(g_title, sizeof g_title, "%s", lua_tostring(g_L, -1));
     lua_pop(g_L, 1);
     return true;
 }
@@ -448,7 +460,28 @@ static std::string build_scene() {
         "  look_at <POSX, 1.0+JUMP*0.85, POSZ> angle 52 right x*16/9 up y }\n";
     for (size_t i = 0; i < g_world.size(); ++i) {
         const Aabb& b = g_world[i];
-        if (b.dyn) {
+        if (b.dyn && b.acorn) {
+            // shape="acorn": nut, cap, stem — sized from the box height
+            float s = b.h / 0.5f;
+            snprintf(buf, sizeof buf,
+                "#ifndef (BOX%zuX) #declare BOX%zuX=%.2f; #end\n"
+                "#ifndef (BOX%zuY) #declare BOX%zuY=%.2f; #end\n"
+                "#ifndef (BOX%zuZ) #declare BOX%zuZ=%.2f; #end\n"
+                "union {\n"
+                "  // scale-then-translate (POV scale is about the origin)\n"
+                "  sphere { 0, %.2f scale <1,1.15,1> translate <0,%.2f,0>"
+                "    pigment { rgb <0.78,0.56,0.28> } finish { phong 0.8 } }\n"
+                "  sphere { 0, %.2f scale <1,0.55,1> translate <0,%.2f,0>"
+                "    pigment { rgb <0.42,0.26,0.12> } finish { phong 0.5 } }\n"
+                "  cylinder { <0,%.2f,0>, <0,%.2f,0>, %.3f"
+                "    pigment { rgb <0.38,0.23,0.10> } }\n"
+                "  translate <BOX%zuX,BOX%zuY,BOX%zuZ> }\n",
+                i, i, b.cx, i, i, b.cy, i, i, b.cz,
+                0.20f * s, 0.20f * s,
+                0.21f * s, 0.36f * s,
+                0.44f * s, 0.56f * s, 0.035f * s,
+                i, i, i);
+        } else if (b.dyn) {
             snprintf(buf, sizeof buf,
                 "#ifndef (BOX%zuX) #declare BOX%zuX=%.2f; #end\n"
                 "#ifndef (BOX%zuY) #declare BOX%zuY=%.2f; #end\n"
@@ -467,16 +500,42 @@ static std::string build_scene() {
         s += buf;
     }
     s +=
-        "// character: torso+head, legs swing about the hip by STEP\n"
+        "// CHUNKINS the squirrel: plump body, cream belly, ears, snout, and\n"
+        "// the all-important bushy tail. Legs swing by STEP; the tail wags.\n"
         "#declare LEG = 28*sin(STEP);\n"
+        "#declare WAG = 14*sin(STEP*0.7);\n"
+        "#declare FUR   = pigment { rgb <0.55,0.32,0.15> };\n"
+        "#declare CREAM = pigment { rgb <0.93,0.85,0.70> };\n"
+        "#declare DARK  = pigment { rgb <0.10,0.07,0.05> };\n"
         "union {\n"
-        "  sphere { <0,1.15,0>, 0.42 scale <0.8,1.15,0.6>"
-        "    pigment { rgb <0.85,0.45,0.2> } finish { phong 0.7 } }\n"
-        "  sphere { <0,1.95,0>, 0.26 pigment { rgb <0.95,0.8,0.65> } finish { phong 0.7 } }\n"
-        "  box { <-0.10,-0.85,-0.10>,<0.10,0,0.10> rotate x*LEG  translate <-0.16,0.85,0>\n"
-        "    pigment { rgb <0.25,0.3,0.6> } finish { phong 0.5 } }\n"
-        "  box { <-0.10,-0.85,-0.10>,<0.10,0,0.10> rotate x*-LEG translate < 0.16,0.85,0>\n"
-        "    pigment { rgb <0.25,0.3,0.6> } finish { phong 0.5 } }\n"
+        "  // scale-THEN-translate: POV scale is about the origin, so a scaled\n"
+        "  // sphere must be built at 0 and moved after (or its position scales)\n"
+        "  sphere { 0, 0.48 scale <0.9,1.0,0.85> translate <0,0.95,0>"
+        " pigment {FUR} finish { phong 0.6 } }\n"
+        "  sphere { 0, 0.34 scale <0.75,0.85,0.6> translate <0,0.88,0.20>"
+        " pigment {CREAM} finish { phong 0.5 } }\n"
+        "  sphere { <0,1.62,0.10>, 0.30 pigment {FUR} finish { phong 0.6 } }\n"
+        "  sphere { 0, 0.13 scale <1,0.8,1.1> translate <0,1.54,0.36>"
+        " pigment {CREAM} finish { phong 0.5 } }\n"
+        "  sphere { <0,1.57,0.47>, 0.045 pigment {DARK} }\n"
+        "  sphere { <-0.12,1.70,0.30>, 0.05 pigment {DARK} }\n"
+        "  sphere { < 0.12,1.70,0.30>, 0.05 pigment {DARK} }\n"
+        "  sphere { 0, 0.09 scale <0.8,1.3,0.6> translate <-0.15,1.90,0.04> pigment {FUR} }\n"
+        "  sphere { 0, 0.09 scale <0.8,1.3,0.6> translate < 0.15,1.90,0.04> pigment {FUR} }\n"
+        "  box { <-0.09,-0.55,-0.09>,<0.09,0,0.09> rotate x*LEG  translate <-0.17,0.55,0>\n"
+        "    pigment {FUR} finish { phong 0.5 } }\n"
+        "  box { <-0.09,-0.55,-0.09>,<0.09,0,0.09> rotate x*-LEG translate < 0.17,0.55,0>\n"
+        "    pigment {FUR} finish { phong 0.5 } }\n"
+        "  union {\n"
+        "    // tail stays BELOW the head and curves slightly right of center\n"
+        "    // so the body still reads from the chase cam\n"
+        "    sphere { <0.10,0.42,-0.40>, 0.17 }\n"
+        "    sphere { <0.16,0.76,-0.55>, 0.23 }\n"
+        "    sphere { <0.18,1.12,-0.54>, 0.26 }\n"
+        "    sphere { <0.14,1.44,-0.40>, 0.20 }\n"
+        "    pigment { rgb <0.62,0.34,0.14> } finish { phong 0.55 }\n"
+        "    rotate y*WAG\n"
+        "  }\n"
         "  rotate y*TURN translate <POSX,JUMP,POSZ>\n"
         "}\n";
     return s;
@@ -646,7 +705,7 @@ static int gametest(FdRenderer& r, int frames) {
 
 static int play(FdRenderer& r, int winW, int winH, int rdiv) {
     if (SDL_Init(SDL_INIT_VIDEO) != 0) { fprintf(stderr, "SDL: %s\n", SDL_GetError()); return 1; }
-    SDL_Window* win = SDL_CreateWindow("Feverdream fd-game (raytraced live)",
+    SDL_Window* win = SDL_CreateWindow(g_title,
         SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED, winW, winH, SDL_WINDOW_SHOWN);
     SDL_Renderer* ren = SDL_CreateRenderer(win, -1,
         SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
@@ -745,17 +804,17 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
         if (++fpsN >= 10) {
             char ti[160];
             if (strcmp(g_hud.state, "won") == 0)
-                snprintf(ti, sizeof ti, "RELIC SWEEP — YOU WIN!  score %d  (ESC quit)", g_hud.score);
+                snprintf(ti, sizeof ti, "%s — YOU WIN!  score %d  (ESC quit)", g_title, g_hud.score);
             else if (strcmp(g_hud.state, "lost") == 0)
-                snprintf(ti, sizeof ti, "RELIC SWEEP — CRUSHED. score %d  (ESC quit)", g_hud.score);
+                snprintf(ti, sizeof ti, "%s — ouch! score %d  (ESC quit)", g_title, g_hud.score);
             else if (g_hud.lives >= 0)       // a script publishing game state
-                snprintf(ti, sizeof ti, "fd-game  %dx%d->%dx%d  %.0f fps (trace %.1f ms)"
-                         "  score %d  lives %d", rW, rH, winW, winH,
+                snprintf(ti, sizeof ti, "%s  %dx%d->%dx%d  %.0f fps (trace %.1f ms)"
+                         "  score %d  lives %d", g_title, rW, rH, winW, winH,
                          fpsN / (now - fpsT), r.frame_us / 1000.0,
                          g_hud.score, g_hud.lives);
             else                             // plain world script (e.g. arena)
-                snprintf(ti, sizeof ti, "fd-game  %dx%d->%dx%d  %.0f fps (trace %.1f ms)",
-                         rW, rH, winW, winH, fpsN / (now - fpsT), r.frame_us / 1000.0);
+                snprintf(ti, sizeof ti, "%s  %dx%d->%dx%d  %.0f fps (trace %.1f ms)",
+                         g_title, rW, rH, winW, winH, fpsN / (now - fpsT), r.frame_us / 1000.0);
             SDL_SetWindowTitle(win, ti);
             fpsT = now; fpsN = 0;
         }
