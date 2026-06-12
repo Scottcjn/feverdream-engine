@@ -221,7 +221,8 @@ private:
 
 // ============================ world + tuning =================================
 enum BoxShape { SHAPE_BOX = 0, SHAPE_ACORN, SHAPE_BADDIE,
-                SHAPE_HEART, SHAPE_STAR, SHAPE_CHOMP };
+                SHAPE_HEART, SHAPE_STAR, SHAPE_CHOMP,
+                SHAPE_WATERFALL, SHAPE_LEAF };
 struct Aabb { float cx, cz, hx, hz, h; bool dyn; float r, g; float cy; bool solid;
               int shape;       // BoxShape — "acorn"/"baddie" in the script
               float ry; };     // facing (deg), baddies only — script-driven
@@ -327,6 +328,7 @@ static float ground_height(float px, float pz, float feet, float tol) {
 struct GameHud {
     int score = 0, lives = -1;          // lives -1 = script has no lives concept
     int world = 0;                      // game_world: 0 = no indicator
+    bool map = true;                    // show_map = false hides the minimap
     char state[16] = "playing";         // "playing" | "won" | "lost"
 };
 static GameHud g_hud;
@@ -418,6 +420,8 @@ static bool load_script(const char* path) {
                 if (strcmp(sh, "heart") == 0)  b.shape = SHAPE_HEART;
                 if (strcmp(sh, "star") == 0)   b.shape = SHAPE_STAR;
                 if (strcmp(sh, "chomp") == 0)  b.shape = SHAPE_CHOMP;
+                if (strcmp(sh, "waterfall") == 0) b.shape = SHAPE_WATERFALL;
+                if (strcmp(sh, "leaf") == 0)   b.shape = SHAPE_LEAF;
             }
             lua_pop(g_L, 1);
             b.ry = lua_field_num(g_L, "ry", 0);
@@ -556,6 +560,9 @@ static void script_tick(double t, double dt, Player& p) {
     lua_pop(g_L, 1);
     lua_getglobal(g_L, "game_world");
     if (lua_isnumber(g_L, -1)) g_hud.world = (int)lua_tointeger(g_L, -1);
+    lua_pop(g_L, 1);
+    lua_getglobal(g_L, "show_map");
+    if (lua_isboolean(g_L, -1)) g_hud.map = lua_toboolean(g_L, -1) != 0;
     lua_pop(g_L, 1);
     lua_getglobal(g_L, "game_state");
     if (lua_isstring(g_L, -1))
@@ -854,6 +861,39 @@ static std::string build_scene() {
                 0.21f * s, 0.36f * s,
                 0.44f * s, 0.56f * s, 0.035f * s,
                 i, i, i);
+        } else if (b.dyn && b.shape == SHAPE_WATERFALL) {
+            // a falling-water sheet: scrolling blue-white stripes (BOX<i>R is
+            // the scroll PHASE, driven by the script) + a splash pool at the
+            // base. Non-solid by convention — walk through it to the secrets.
+            n = snprintf(buf, sizeof buf,
+                "#ifndef (BOX%zuX) #declare BOX%zuX=%.2f; #end\n"
+                "#ifndef (BOX%zuY) #declare BOX%zuY=%.2f; #end\n"
+                "#ifndef (BOX%zuZ) #declare BOX%zuZ=%.2f; #end\n"
+                "#ifndef (BOX%zuR) #declare BOX%zuR=0; #end\n"
+                "union {\n"
+                "  box { <%.2f,0,%.2f>, <%.2f,%.2f,%.2f>\n"
+                "    pigment { gradient y color_map {\n"
+                "      [0.00 rgbt <0.75,0.88,1.00,0.30>][0.35 rgbt <0.55,0.75,0.98,0.45>]\n"
+                "      [0.60 rgbt <0.90,0.96,1.00,0.25>][1.00 rgbt <0.60,0.80,1.00,0.45>] }\n"
+                "      scale %.2f translate y*-BOX%zuR }\n"
+                "    finish { phong 0.6 reflection 0.06 } }\n"
+                "  sphere { 0, 1 scale <%.2f,0.16,%.2f> translate <0,0.10,0>\n"
+                "    pigment { rgbt <0.85,0.93,1.00,0.35> } finish { phong 0.8 } }\n"
+                "  translate <BOX%zuX,BOX%zuY,BOX%zuZ> }\n",
+                i, i, b.cx, i, i, b.cy, i, i, b.cz, i, i,
+                -b.hx, -b.hz, b.hx, b.h, b.hz,
+                b.h / 5.0f, i,
+                b.hx * 1.7f, b.hz * 2.6f,
+                i, i, i);
+        } else if (b.shape == SHAPE_LEAF && !b.dyn) {
+            // a leaf pad: squashed green sphere you can stand on (collision
+            // is the box; the sphere is the look). For tree climbing.
+            n = snprintf(buf, sizeof buf,
+                "sphere { 0, 1 scale <%.2f,%.2f,%.2f> translate <%.2f,%.2f,%.2f>\n"
+                "  pigment { rgb <%.2f,%.2f,0.22> } finish { phong 0.5 ambient 0.4 } }\n",
+                b.hx * 1.12f, b.h * 0.62f, b.hz * 1.12f,
+                b.cx, b.cy + b.h * 0.45f, b.cz,
+                b.r > 0 ? b.r : 0.22f, b.g > 0 ? b.g : 0.55f);
         } else if (b.dyn) {
             // dyn solid box: a moving/ROTATING platform — yaw via BOX<i>R,
             // exactly matching the rotated-collision local frame
@@ -993,10 +1033,11 @@ static std::vector<Declare> declares_for(const Player& p) {
         snprintf(nm, sizeof nm, "BOX%zuX", i); d.push_back({nm, g_world[i].cx});
         snprintf(nm, sizeof nm, "BOX%zuY", i); d.push_back({nm, g_world[i].cy});
         snprintf(nm, sizeof nm, "BOX%zuZ", i); d.push_back({nm, g_world[i].cz});
-        // anything that can rotate streams its yaw: baddies/chomps face their
-        // prey, stars spin, and dyn SOLID boxes are rotating platforms
+        // anything that animates via R streams it: baddies/chomps face their
+        // prey, stars spin, dyn SOLID boxes rotate, waterfalls SCROLL (R is
+        // the water phase there, not a yaw)
         if (g_world[i].shape == SHAPE_BADDIE || g_world[i].shape == SHAPE_CHOMP ||
-            g_world[i].shape == SHAPE_STAR ||
+            g_world[i].shape == SHAPE_STAR || g_world[i].shape == SHAPE_WATERFALL ||
             (g_world[i].shape == SHAPE_BOX && g_world[i].solid)) {
             snprintf(nm, sizeof nm, "BOX%zuR", i); d.push_back({nm, g_world[i].ry});
         }
@@ -1195,6 +1236,61 @@ static void draw_stencil(SDL_Renderer* ren, const char** rows,
                 SDL_Rect dot = { x + col * px, y + row * px, px, px };
                 SDL_RenderFillRect(ren, &dot);
             }
+}
+
+// the compass map: live top-down minimap straight from g_world — platforms
+// as dim blocks, pickups as gold dots, baddies as angry dots, Chunkins as a
+// white dot with a facing tick. North (+Z) is up. No Lua involvement: the
+// world IS the map.
+static void draw_minimap(SDL_Renderer* ren, int winW, int winH, const Player& p) {
+    const int MW = 124, MH = 124;
+    int mx = winW - MW - 14, my = winH - MH - 14;
+
+    float E = 15.0f;                              // world half-extent, auto-fit
+    for (const Aabb& b : g_world)
+        if (b.solid && !b.dyn)
+            E = fmaxf(E, fmaxf(fabsf(b.cx) + b.hx, fabsf(b.cz) + b.hz));
+    E = fminf(E, 60.0f);
+    float s = MW / (2.0f * E);
+    auto X = [&](float wx) { return mx + (int)((wx + E) * s); };
+    auto Y = [&](float wz) { return my + (int)((E - wz) * s); };   // +Z = up
+
+    SDL_Rect bg = { mx - 3, my - 3, MW + 6, MH + 6 };
+    SDL_SetRenderDrawColor(ren, 10, 26, 12, 170);
+    SDL_RenderFillRect(ren, &bg);
+
+    for (const Aabb& b : g_world) {
+        if (b.cy + b.h < 0.1f) continue;          // sunken: not on the map
+        if ((b.shape == SHAPE_BOX || b.shape == SHAPE_LEAF) && b.solid) {
+            SDL_Rect r2 = { X(b.cx - b.hx), Y(b.cz + b.hz),
+                            (int)fmaxf(2, 2 * b.hx * s), (int)fmaxf(2, 2 * b.hz * s) };
+            if (b.shape == SHAPE_LEAF) SDL_SetRenderDrawColor(ren, 60, 160, 80, 210);
+            else if (b.dyn) SDL_SetRenderDrawColor(ren, 170, 150, 90, 200);  // movers
+            else            SDL_SetRenderDrawColor(ren, 90, 110, 70, 200);
+            SDL_RenderFillRect(ren, &r2);
+        }
+    }
+    for (const Aabb& b : g_world) {               // dots over blocks
+        if (b.cy + b.h < 0.1f) continue;
+        SDL_Rect d = { X(b.cx) - 2, Y(b.cz) - 2, 5, 5 };
+        switch (b.shape) {
+            case SHAPE_ACORN:  SDL_SetRenderDrawColor(ren, 245, 200, 70, 255); break;
+            case SHAPE_HEART:  SDL_SetRenderDrawColor(ren, 235, 70, 80, 255); break;
+            case SHAPE_STAR:   SDL_SetRenderDrawColor(ren, 255, 240, 120, 255); break;
+            case SHAPE_BADDIE:
+            case SHAPE_CHOMP:  SDL_SetRenderDrawColor(ren, 200, 40, 40, 255);
+                               d.w = d.h = 6; break;
+            default: continue;
+        }
+        SDL_RenderFillRect(ren, &d);
+    }
+    // Chunkins: white dot + facing tick
+    SDL_Rect me = { X(p.x) - 3, Y(p.z) - 3, 7, 7 };
+    SDL_SetRenderDrawColor(ren, 255, 255, 255, 255);
+    SDL_RenderFillRect(ren, &me);
+    SDL_Rect tick = { X(p.x + sinf(p.yaw) * 1.6f) - 1,
+                      Y(p.z + cosf(p.yaw) * 1.6f) - 1, 3, 3 };
+    SDL_RenderFillRect(ren, &tick);
 }
 
 static int play(FdRenderer& r, int winW, int winH, int rdiv) {
@@ -1466,6 +1562,7 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
                 SDL_SetRenderDrawColor(ren, 90, 170, 235, 235);
                 SDL_RenderFillRect(ren, &pip);
             }
+            if (g_hud.map) draw_minimap(ren, winW, winH, p);   // compass map (show_map=false opts out)
             if (over) {                          // tint: gold for won, red for lost
                 bool won = strcmp(g_hud.state, "won") == 0;
                 SDL_SetRenderDrawColor(ren, won ? 255 : 160, won ? 215 : 30,

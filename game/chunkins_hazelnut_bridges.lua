@@ -10,7 +10,7 @@
 -- gametest reachability.
 
 game_title = "Golden Acorn 6: Hazelnut Bridges"
--- terminal: winning Hazelnut Bridges completes the quest
+next_level = "chunkins7.lua"   -- onward to Cascade Hollow
 
 config = {
   speed = 4.3, turn_rate = 2.8, step_rate = 11.0,
@@ -127,4 +127,4 @@ function on_tick(t, dt, player)
   end
 end
 
-worlds = { "chunkins1.lua", "chunkins2.lua", "chunkins3.lua", "chunkins4.lua", "chunkins5.lua", "chunkins_hazelnut_bridges.lua" }
+worlds = { "chunkins1.lua", "chunkins2.lua", "chunkins3.lua", "chunkins4.lua", "chunkins5.lua", "chunkins_hazelnut_bridges.lua", "chunkins7.lua" }
