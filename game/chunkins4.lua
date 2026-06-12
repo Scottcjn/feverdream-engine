@@ -60,6 +60,7 @@ local GOLD   = #ACORNS
 local base_y = { 0.45, 1.45, 3.45, 3.45, 2.45, 0.45, 0.45, 3.15 }
 
 game_score, game_lives, game_state = 0, 3, "playing"
+game_world = 4
 local collected, invuln = {}, 0
 local stolen = nil
 

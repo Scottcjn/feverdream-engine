@@ -52,6 +52,7 @@ local ACORNS  = { boxes[13], boxes[14], boxes[15], boxes[16], boxes[17], boxes[1
 local base_y  = { 0.45, 1.25, 2.85, 4.45, 0.45, 4.85 }   -- last = summit gold
 
 game_score, game_lives, game_state = 0, 3, "playing"
+game_world = 3
 local collected, invuln = {}, 0
 local stolen = nil          -- acorn index riding the thief's back
 

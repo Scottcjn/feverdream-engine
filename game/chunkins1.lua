@@ -37,6 +37,7 @@ local ACORNS  = { boxes[8], boxes[9], boxes[10], boxes[11] }
 local base_y  = { 0.45, 0.75, 0.45, 1.05 }     -- two sit on their crates
 
 game_score, game_lives, game_state = 0, 3, "playing"
+game_world = 1
 local collected, invuln = {}, 0
 
 local function run_baddies(t, dt, player)

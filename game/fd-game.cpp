@@ -430,6 +430,7 @@ struct Player {
 // game state the script publishes for the HUD / end screens
 struct GameHud {
     int score = 0, lives = -1;          // lives -1 = script has no lives concept
+    int world = 0;                      // game_world: 0 = no indicator
     char state[16] = "playing";         // "playing" | "won" | "lost"
 };
 static GameHud g_hud;
@@ -497,6 +498,9 @@ static void script_tick(double t, double dt, Player& p) {
     lua_pop(g_L, 1);
     lua_getglobal(g_L, "game_lives");
     if (lua_isnumber(g_L, -1)) g_hud.lives = (int)lua_tointeger(g_L, -1);
+    lua_pop(g_L, 1);
+    lua_getglobal(g_L, "game_world");
+    if (lua_isnumber(g_L, -1)) g_hud.world = (int)lua_tointeger(g_L, -1);
     lua_pop(g_L, 1);
     lua_getglobal(g_L, "game_state");
     if (lua_isstring(g_L, -1))
@@ -941,6 +945,65 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
     bool running = true, jump_pending = false;   // latched until a sim step consumes it
     double prev = now_s(), acc = 0, simt = 0, fpsT = prev, win_at = -1;
     int fpsN = 0, rc_out = 0;
+
+    // ---- splash screen: the raytraced title card (any key starts) ----------
+    if (!getenv("FD_NOSPLASH")) {
+        // cwd first (matches how level scripts load), exe-dir as fallback so
+        // launching from elsewhere still gets the title card (tri-brain)
+        FILE* sf = fopen("splash.pov", "rb");
+        if (!sf) {
+            char exe[448];
+            ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+            if (n > 0) {
+                exe[n] = 0;
+                char* slash = strrchr(exe, '/');
+                if (slash) *slash = 0;
+                char alt[512];
+                snprintf(alt, sizeof alt, "%s/splash.pov", exe);
+                sf = fopen(alt, "rb");
+            }
+        }
+        if (sf) {
+            std::string splash;
+            char chunk[4096]; size_t got;
+            while ((got = fread(chunk, 1, sizeof chunk, sf)) > 0)
+                splash.append(chunk, got);
+            fclose(sf);
+            if (r.scene(splash)) {
+                SDL_SetWindowTitle(win, "CHUNKINS — The Search for the Golden Acorn");
+                double t0 = now_s();
+                bool in_splash = true;
+                while (in_splash && running) {
+                    SDL_Event e;
+                    while (SDL_PollEvent(&e)) {
+                        if (e.type == SDL_QUIT) { running = false; }
+                        else if (e.type == SDL_KEYDOWN && !e.key.repeat) {
+                            if (e.key.keysym.sym == SDLK_ESCAPE) running = false;
+                            else in_splash = false;          // any key starts
+                        }
+                    }
+                    std::vector<Declare> sd = { {"SPIN", (float)((now_s() - t0) * 24.0)} };
+                    if (!r.render(rW, rH, sd)) break;        // splash is best-effort
+                    if (r.frame_fits(rW, rH)) {
+                        if (gpu && g_gpu.frame(r.fb.data(), 0.6f, 32, gpu_out.data()) == 0)
+                            SDL_UpdateTexture(tex, NULL, gpu_out.data(), winW * 4);
+                        else if (!gpu)
+                            SDL_UpdateTexture(tex, NULL, r.fb.data(), rW * 4);
+                        SDL_RenderClear(ren);
+                        SDL_RenderCopy(ren, tex, NULL, NULL);
+                        SDL_RenderPresent(ren);
+                    }
+                }
+            } else fprintf(stderr, "fd-game: splash scene rejected — skipping\n");
+        }
+        // back to the actual world (also restores reconnect state)
+        if (running && !r.scene(build_scene())) {
+            fprintf(stderr, "fd-game: FATAL: world scene rejected after splash\n");
+            exit(1);
+        }
+        if (g_gpu.active && g_gpu.reset) g_gpu.reset();
+        prev = now_s();                          // don't count splash as a hitch
+    }
     printf("fd-game: WASD/arrows move+turn, SPACE jump (retry when lost), "
            "1-%zu pick a world, ESC quit\n", g_worlds.empty() ? 9 : g_worlds.size());
     while (running) {
@@ -1055,6 +1118,12 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
             for (int l = 0; l < g_hud.lives && l < 32; ++l) {
                 pip = { winW - 34 - l * 26, 14, 18, 18 };
                 SDL_SetRenderDrawColor(ren, 220, 60, 60, 235);
+                SDL_RenderFillRect(ren, &pip);
+            }
+            // world indicator: sky-blue pips, bottom-left (game_world from Lua)
+            for (int w = 0; w < g_hud.world && w < 16; ++w) {
+                pip = { 16 + w * 26, winH - 34, 18, 18 };
+                SDL_SetRenderDrawColor(ren, 90, 170, 235, 235);
                 SDL_RenderFillRect(ren, &pip);
             }
             if (over) {                          // tint: gold for won, red for lost

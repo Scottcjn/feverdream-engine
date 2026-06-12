@@ -49,6 +49,7 @@ local ACORNS = { boxes[14], boxes[15], boxes[16], boxes[17], boxes[18] }
 local base_y = { 0.45, 2.85, nil, 3.45, 0.45 }   -- nil = rides the elevator
 
 game_score, game_lives, game_state = 0, 3, "playing"
+game_world = 2
 local collected, invuln = {}, 0
 
 local function run_baddies(t, dt, player)
