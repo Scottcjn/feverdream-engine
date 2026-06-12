@@ -25,6 +25,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <cstdint>
+#include <cerrno>
 #include <cmath>
 #include <string>
 #include <vector>
@@ -108,25 +109,47 @@ struct Declare { std::string name; float value; };
 
 class FdRenderer {
     int fd_ = -1;
+    std::string path_, scene_text_;   // for reconnect: where + what world
 public:
     std::vector<uint8_t> fb;          // RGBA8 of the last frame
     uint32_t fb_w = 0, fb_h = 0, frame_us = 0;
 
     bool connect_to(const char* path) {
+        if (fd_ >= 0) { close(fd_); fd_ = -1; }
         fd_ = socket(AF_UNIX, SOCK_STREAM, 0);
         if (fd_ < 0) return false;
+        // a hung/dead daemon must FAIL the call, never freeze the window
+        // (2s >> any real frame; checked because this IS the safety guarantee)
+        struct timeval tv = { 2, 0 };
+        if (setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv) != 0 ||
+            setsockopt(fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv) != 0)
+            fprintf(stderr, "fd-game: WARNING socket timeouts not set (%s) — "
+                    "a daemon hang could freeze the window\n", strerror(errno));
         struct sockaddr_un a; memset(&a, 0, sizeof a);
         a.sun_family = AF_UNIX;
         snprintf(a.sun_path, sizeof a.sun_path, "%s", path);
-        return connect(fd_, (struct sockaddr*)&a, sizeof a) == 0;
+        if (connect(fd_, (struct sockaddr*)&a, sizeof a) != 0) {
+            close(fd_); fd_ = -1;
+            return false;
+        }
+        path_ = path;
+        return true;
     }
     ~FdRenderer() { if (fd_ >= 0) close(fd_); }
 
     bool scene(const std::string& sdl) {
+        scene_text_ = sdl;            // remembered for reconnect
         if (!send(T_SCENE_FULL, 0, sdl.data(), (uint32_t)sdl.size())) return false;
         uint8_t type, flags; std::vector<uint8_t> p;
         if (!recv_msg(&type, &flags, p)) return false;
         return type == T_SCENE_ACK && p.size() == 4 && p[0] == 0;
+    }
+
+    // after a daemon death/restart: fresh socket + resend the current world
+    bool reconnect() {
+        if (path_.empty() || scene_text_.empty()) return false;
+        std::string keep = scene_text_;
+        return connect_to(path_.c_str()) && scene(keep);
     }
 
     bool render(int w, int h, const std::vector<Declare>& decls) {
@@ -909,7 +932,7 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
     const float dt = 1.0f / SIM_HZ;
     bool running = true, jump_pending = false;   // latched until a sim step consumes it
     double prev = now_s(), acc = 0, simt = 0, fpsT = prev, win_at = -1;
-    int fpsN = 0;
+    int fpsN = 0, rc_out = 0;
     printf("fd-game: WASD/arrows move+turn, SPACE jump (retry when lost), "
            "1-%zu pick a world, ESC quit\n", g_worlds.empty() ? 9 : g_worlds.size());
     while (running) {
@@ -960,7 +983,27 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
             acc -= dt; simt += dt;
         }
 
-        if (!r.render(rW, rH, declares_for(p))) { fprintf(stderr, "render failed\n"); break; }
+        if (!r.render(rW, rH, declares_for(p))) {
+            // daemon hiccup (or death + supervisor restart): reconnect and
+            // resend the world instead of freezing or quitting. Dead daemon:
+            // ~2s (connect fails instantly). Hung-but-alive daemon: up to
+            // ~4 x (2s+2s) socket timeouts ≈ 18s worst case before handoff.
+            fprintf(stderr, "fd-game: render failed — reconnecting...\n");
+            bool back = false;
+            for (int tries = 0; tries < 4 && !back; ++tries) {
+                SDL_Delay(500);
+                back = r.reconnect();
+            }
+            if (!back) {
+                // exit NONZERO: the supervisor restarts the daemon+game pair.
+                // rc 0 would read as a clean ESC and stop supervision (drilled)
+                fprintf(stderr, "fd-game: daemon gone — handing to supervisor\n");
+                rc_out = 2; running = false; break;
+            }
+            fprintf(stderr, "fd-game: reconnected\n");
+            if (g_gpu.active && g_gpu.reset) g_gpu.reset();
+            continue;
+        }
         static int soft_miss = 0;
         if (!r.frame_fits(rW, rH)) {
             // tolerate transitions, but a black screen must NOT be silent
@@ -1038,10 +1081,11 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
     }
     g_gpu.unload();
     SDL_DestroyTexture(tex); SDL_DestroyRenderer(ren); SDL_DestroyWindow(win); SDL_Quit();
-    return 0;
+    return rc_out;
 }
 
 int main(int argc, char** argv) {
+    setvbuf(stdout, NULL, _IOLBF, 0);   // death notes must reach the log
     bool st = argc > 1 && strcmp(argv[1], "--selftest") == 0;
     bool gt = argc > 1 && strcmp(argv[1], "--gametest") == 0;
     bool headless = st || gt;

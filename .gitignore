@@ -9,3 +9,4 @@ daemon/fd-daemon
 daemon/__pycache__/
 game/fd-game
 game/libfdpost.so
+game/fd-game-asan
