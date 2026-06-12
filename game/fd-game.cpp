@@ -197,8 +197,10 @@ private:
 };
 
 // ============================ world + tuning =================================
+enum BoxShape { SHAPE_BOX = 0, SHAPE_ACORN, SHAPE_BADDIE };
 struct Aabb { float cx, cz, hx, hz, h; bool dyn; float r, g; float cy; bool solid;
-              bool acorn; };   // shape="acorn" in the script (else a box)
+              int shape;       // BoxShape — "acorn"/"baddie" in the script
+              float ry; };     // facing (deg), baddies only — script-driven
 static std::vector<Aabb> g_world;
 static float P_RADIUS = 0.45f;
 
@@ -273,6 +275,7 @@ static float ground_height(float px, float pz, float feet, float tol) {
 // declares. Player table is read-only this round.
 static lua_State* g_L = NULL;
 static char g_title[64] = "fd-game";    // scripts override via game_title
+static char g_next[128] = "";           // scripts chain levels via next_level
 
 // play_sound("jump"|"land"|"step"|"bump"|"blip" [, gain]) — script audio hook
 static int l_play_sound(lua_State* L) {
@@ -333,10 +336,15 @@ static bool load_script(const char* path) {
             lua_getfield(g_L, -1, "solid");          // default true; collectibles
             b.solid = lua_isnil(g_L, -1) || lua_toboolean(g_L, -1) != 0;
             lua_pop(g_L, 1);
-            lua_getfield(g_L, -1, "shape");          // "acorn" | default box
-            b.acorn = lua_isstring(g_L, -1) &&
-                      strcmp(lua_tostring(g_L, -1), "acorn") == 0;
+            lua_getfield(g_L, -1, "shape");          // "acorn"|"baddie"|box
+            b.shape = SHAPE_BOX;
+            if (lua_isstring(g_L, -1)) {
+                const char* sh = lua_tostring(g_L, -1);
+                if (strcmp(sh, "acorn") == 0)  b.shape = SHAPE_ACORN;
+                if (strcmp(sh, "baddie") == 0) b.shape = SHAPE_BADDIE;
+            }
             lua_pop(g_L, 1);
+            b.ry = lua_field_num(g_L, "ry", 0);
             g_world.push_back(b);
         }
         lua_pop(g_L, 1);
@@ -360,6 +368,12 @@ static bool load_script(const char* path) {
     lua_getglobal(g_L, "game_title");
     if (lua_isstring(g_L, -1))
         snprintf(g_title, sizeof g_title, "%s", lua_tostring(g_L, -1));
+    lua_pop(g_L, 1);
+
+    g_next[0] = 0;                                   // reset per level
+    lua_getglobal(g_L, "next_level");
+    if (lua_isstring(g_L, -1))
+        snprintf(g_next, sizeof g_next, "%s", lua_tostring(g_L, -1));
     lua_pop(g_L, 1);
     return true;
 }
@@ -389,6 +403,7 @@ static void script_tick(double t, double dt, Player& p) {
     lua_pushnumber(g_L, p.z);        lua_setfield(g_L, -2, "z");
     lua_pushnumber(g_L, p.yaw);      lua_setfield(g_L, -2, "yaw");
     lua_pushnumber(g_L, p.jy);       lua_setfield(g_L, -2, "jump");
+    lua_pushnumber(g_L, p.jv);       lua_setfield(g_L, -2, "vy");
     lua_pushboolean(g_L, p.grounded);lua_setfield(g_L, -2, "grounded");
     if (lua_pcall(g_L, 3, 0, 0) != LUA_OK) {
         // a script error must never kill the frame loop -- report and carry on
@@ -405,6 +420,7 @@ static void script_tick(double t, double dt, Player& p) {
                 g_world[i].cx = lua_field_num(g_L, "cx", g_world[i].cx);
                 g_world[i].cz = lua_field_num(g_L, "cz", g_world[i].cz);
                 g_world[i].cy = lua_field_num(g_L, "cy", g_world[i].cy);
+                g_world[i].ry = lua_field_num(g_L, "ry", g_world[i].ry);
             }
             lua_pop(g_L, 1);
         }
@@ -422,6 +438,15 @@ static void script_tick(double t, double dt, Player& p) {
         lua_pushnil(g_L); lua_setglobal(g_L, "push_z");
     }
     lua_pop(g_L, 2);
+
+    // bounce channel: stomping a baddie pops Chunkins upward
+    lua_getglobal(g_L, "bounce");
+    if (lua_isnumber(g_L, -1)) {
+        p.jv = (float)lua_tonumber(g_L, -1);
+        p.grounded = false;
+        lua_pushnil(g_L); lua_setglobal(g_L, "bounce");
+    }
+    lua_pop(g_L, 1);
 
     // game state for the HUD: game_score, game_lives, game_state
     lua_getglobal(g_L, "game_score");
@@ -497,7 +522,46 @@ static std::string build_scene() {
     for (size_t i = 0; i < g_world.size(); ++i) {
         const Aabb& b = g_world[i];
         int n = 0;
-        if (b.dyn && b.acorn) {
+        if (b.dyn && b.shape == SHAPE_BADDIE) {
+            // a prowling critter: low body, head with snout, pointy ears,
+            // glowing eyes, tail. BOX<i>R turns him to face his prey.
+            float s = b.h / 0.9f;
+            n = snprintf(buf, sizeof buf,
+                "#ifndef (BOX%zuX) #declare BOX%zuX=%.2f; #end\n"
+                "#ifndef (BOX%zuY) #declare BOX%zuY=%.2f; #end\n"
+                "#ifndef (BOX%zuZ) #declare BOX%zuZ=%.2f; #end\n"
+                "#ifndef (BOX%zuR) #declare BOX%zuR=0; #end\n"
+                "union {\n"
+                "  sphere { 0, %.2f scale <1.05,0.80,1.30> translate <0,%.2f,0>"
+                "    pigment { rgb <0.28,0.24,0.30> } finish { phong 0.5 } }\n"
+                "  sphere { 0, %.2f translate <0,%.2f,%.2f>"
+                "    pigment { rgb <0.30,0.26,0.32> } finish { phong 0.5 } }\n"
+                "  cone { <0,%.2f,%.2f>, %.2f, <0,%.2f,%.2f>, 0"
+                "    pigment { rgb <0.22,0.19,0.24> } }\n"
+                "  cone { <-%.2f,%.2f,%.2f>, %.2f, <-%.2f,%.2f,%.2f>, 0"
+                "    pigment { rgb <0.26,0.22,0.28> } }\n"
+                "  cone { <%.2f,%.2f,%.2f>, %.2f, <%.2f,%.2f,%.2f>, 0"
+                "    pigment { rgb <0.26,0.22,0.28> } }\n"
+                "  sphere { <-%.2f,%.2f,%.2f>, %.3f"
+                "    pigment { rgb <1.0,0.85,0.25> } finish { ambient 0.9 } }\n"
+                "  sphere { <%.2f,%.2f,%.2f>, %.3f"
+                "    pigment { rgb <1.0,0.85,0.25> } finish { ambient 0.9 } }\n"
+                "  cone { <0,%.2f,-%.2f>, %.2f, <0,%.2f,-%.2f>, 0"
+                "    pigment { rgb <0.24,0.20,0.26> } }\n"
+                "  rotate y*BOX%zuR translate <BOX%zuX,BOX%zuY,BOX%zuZ> }\n",
+                i, i, b.cx, i, i, b.cy, i, i, b.cz, i, i,
+                0.34f*s, 0.34f*s,                              // body
+                0.21f*s, 0.58f*s, 0.34f*s,                     // head
+                0.55f*s, 0.46f*s, 0.10f*s, 0.52f*s, 0.68f*s,   // snout
+                0.12f*s, 0.74f*s, 0.26f*s, 0.07f*s,
+                0.14f*s, 0.94f*s, 0.24f*s,                     // ear L
+                0.12f*s, 0.74f*s, 0.26f*s, 0.07f*s,
+                0.14f*s, 0.94f*s, 0.24f*s,                     // ear R
+                0.09f*s, 0.64f*s, 0.50f*s, 0.035f*s,           // eye L
+                0.09f*s, 0.64f*s, 0.50f*s, 0.035f*s,           // eye R
+                0.30f*s, 0.40f*s, 0.09f*s, 0.55f*s, 0.85f*s,   // tail
+                i, i, i, i);
+        } else if (b.dyn && b.shape == SHAPE_ACORN) {
             // shape="acorn": nut, cap, stem — sized from the box height
             float s = b.h / 0.5f;
             n = snprintf(buf, sizeof buf,
@@ -507,14 +571,14 @@ static std::string build_scene() {
                 "union {\n"
                 "  // scale-then-translate (POV scale is about the origin)\n"
                 "  sphere { 0, %.2f scale <1,1.15,1> translate <0,%.2f,0>"
-                "    pigment { rgb <0.78,0.56,0.28> } finish { phong 0.8 } }\n"
+                "    pigment { rgb <%.2f,%.2f,0.25> } finish { phong 0.9 reflection 0.10 } }\n"
                 "  sphere { 0, %.2f scale <1,0.55,1> translate <0,%.2f,0>"
                 "    pigment { rgb <0.42,0.26,0.12> } finish { phong 0.5 } }\n"
                 "  cylinder { <0,%.2f,0>, <0,%.2f,0>, %.3f"
                 "    pigment { rgb <0.38,0.23,0.10> } }\n"
                 "  translate <BOX%zuX,BOX%zuY,BOX%zuZ> }\n",
                 i, i, b.cx, i, i, b.cy, i, i, b.cz,
-                0.20f * s, 0.20f * s,
+                0.20f * s, 0.20f * s, b.r, b.g,
                 0.21f * s, 0.36f * s,
                 0.44f * s, 0.56f * s, 0.035f * s,
                 i, i, i);
@@ -647,6 +711,9 @@ static std::vector<Declare> declares_for(const Player& p) {
         snprintf(nm, sizeof nm, "BOX%zuX", i); d.push_back({nm, g_world[i].cx});
         snprintf(nm, sizeof nm, "BOX%zuY", i); d.push_back({nm, g_world[i].cy});
         snprintf(nm, sizeof nm, "BOX%zuZ", i); d.push_back({nm, g_world[i].cz});
+        if (g_world[i].shape == SHAPE_BADDIE) {
+            snprintf(nm, sizeof nm, "BOX%zuR", i); d.push_back({nm, g_world[i].ry});
+        }
     }
     return d;
 }
@@ -654,6 +721,41 @@ static std::vector<Declare> declares_for(const Player& p) {
 static double now_s() {
     using namespace std::chrono;
     return duration<double>(steady_clock::now().time_since_epoch()).count();
+}
+
+// level chain: after a win, when the script named a next_level, swap the
+// whole world live — fresh script, fresh player, new SCENE_FULL to the
+// daemon (it re-parses next frame; this is what the protocol was built for).
+// Returns true if a transition happened.
+static const double WIN_LINGER_S = 2.5;       // savor the gold tint first
+static bool maybe_advance(FdRenderer& r, Player& p, double simt, double* win_at) {
+    if (strcmp(g_hud.state, "won") != 0 || !g_next[0]) {
+        if (strcmp(g_hud.state, "won") != 0) *win_at = -1;
+        return false;
+    }
+    if (*win_at < 0) { *win_at = simt; return false; }
+    if (simt - *win_at < WIN_LINGER_S) return false;
+
+    char next[sizeof g_next];
+    snprintf(next, sizeof next, "%s", g_next);
+    if (g_L) { lua_close(g_L); g_L = NULL; }
+    g_hud = GameHud();
+    if (!load_script(next)) {
+        fprintf(stderr, "fd-game: next_level %s failed to load\n", next);
+        default_world();
+    }
+    p = Player();
+    *win_at = -1;
+    if (!r.scene(build_scene())) {
+        // old Lua state is gone and the daemon kept the previous scene —
+        // rendering on would mix worlds. A broken level is a build error:
+        // die loudly (same policy as scene-chunk truncation).
+        fprintf(stderr, "fd-game: FATAL: next_level '%s' scene rejected by daemon\n", next);
+        exit(1);
+    }
+    g_audio.play(FdAudio::BLIP, 1.2f);
+    printf("fd-game: level up -> %s\n", g_title);
+    return true;
 }
 
 // ============================ selftest (headless) ============================
@@ -719,12 +821,13 @@ static int selftest(FdRenderer& r, int frames) {
 static int gametest(FdRenderer& r, int frames) {
     Player p;
     const float dt = 1.0f / SIM_HZ;
-    double t = 0; uint64_t us = 0;
-    int score_at_half = -1;
+    double t = 0, win_at = -1; uint64_t us = 0;
+    int score_at_half = -1, levels = 0;
     float max_feet = 0;
     for (int i = 0; i < frames; ++i) {
         Input in; in.move = 1;                  // hold forward...
         in.jump = (i % 60 == 30);               // ...hopping as it goes
+        if (maybe_advance(r, p, t, &win_at)) levels++;
         script_tick(t, 2 * dt, p);
         for (int k = 0; k < 2; ++k) { simulate(p, in, dt); in.jump = false; t += dt; }
         max_feet = fmaxf(max_feet, p.grounded ? p.jy : max_feet);
@@ -734,8 +837,10 @@ static int gametest(FdRenderer& r, int frames) {
     }
     printf("fd-game gametest: %d frames, %.1f fps end-to-end\n",
            frames, 1e6 * frames / (double)us);
-    printf("  score %d (half-way %d), lives %d, state %s, highest stand %.2f\n",
-           g_hud.score, score_at_half, g_hud.lives, g_hud.state, max_feet);
+    printf("  score %d (half-way %d), lives %d, state %s, highest stand %.2f, "
+           "levels advanced %d, title '%s'\n",
+           g_hud.score, score_at_half, g_hud.lives, g_hud.state, max_feet,
+           levels, g_title);
     // PIXEL assertion: a parse-failing scene "renders" at full speed with no
     // framebuffer — logic asserts alone let a black screen pass (it happened)
     bool pixels = r.frame_fits(320, 180);
@@ -802,6 +907,9 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
         if (k[SDL_SCANCODE_LEFT]  || k[SDL_SCANCODE_A]) in.turn -= 1;
         if (k[SDL_SCANCODE_RIGHT] || k[SDL_SCANCODE_D]) in.turn += 1;
 
+        static double win_at = -1;
+        if (maybe_advance(r, p, simt, &win_at) && g_gpu.active && g_gpu.reset)
+            g_gpu.reset();                       // new world, fresh GPU history
         script_tick(simt, ft, p);
         // evaluate AFTER the tick: a state change this frame freezes this frame
         bool over = strcmp(g_hud.state, "playing") != 0;
@@ -900,7 +1008,7 @@ int main(int argc, char** argv) {
     const char* sock   = headless ? (argc > 3 ? argv[3] : "/tmp/feverdream.sock")
                                   : (argc > 1 ? argv[1] : "/tmp/feverdream.sock");
     const char* script = headless ? (argc > 4 ? argv[4] : (gt ? "relic_sweep.lua" : "arena.lua"))
-                                  : (argc > 5 ? argv[5] : "relic_sweep.lua");
+                                  : (argc > 5 ? argv[5] : "chunkins1.lua");
     int winW = (!headless && argc > 2) ? atoi(argv[2]) : 1280;
     int winH = (!headless && argc > 3) ? atoi(argv[3]) : 720;
     int rdiv = (!headless && argc > 4) ? atoi(argv[4]) : 4;
