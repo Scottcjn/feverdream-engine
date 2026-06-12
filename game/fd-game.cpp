@@ -40,6 +40,9 @@ extern "C" {
 #include <lauxlib.h>
 }
 
+#include "fd_audio.h"
+static FdAudio g_audio;
+
 // ============================ protocol client ================================
 static const uint8_t FD_MAGIC = 0xFD, FD_VERSION = 0x00;
 static const uint8_t T_SCENE_FULL = 0x01, T_RENDER = 0x02, T_SHUTDOWN = 0x7F;
@@ -147,14 +150,16 @@ static void default_world() {
     };
 }
 
-// circle-vs-AABB push-out in XZ
-static void collide(float* px, float* pz) {
+// circle-vs-AABB push-out in XZ; returns true if any box pushed the player
+static bool collide(float* px, float* pz) {
+    bool pushed = false;
     for (const Aabb& b : g_world) {
         float nx = fmaxf(b.cx - b.hx, fminf(*px, b.cx + b.hx));
         float nz = fmaxf(b.cz - b.hz, fminf(*pz, b.cz + b.hz));
         float dx = *px - nx, dz = *pz - nz;
         float d2 = dx * dx + dz * dz;
         if (d2 >= P_RADIUS * P_RADIUS) continue;
+        pushed = true;
         if (d2 > 1e-9f) {
             float d = sqrtf(d2), s = (P_RADIUS - d) / d;
             *px += dx * s; *pz += dz * s;
@@ -162,6 +167,7 @@ static void collide(float* px, float* pz) {
             *px = b.cx + b.hx + P_RADIUS;
         }
     }
+    return pushed;
 }
 
 // ============================ Lua scripting ==================================
@@ -172,6 +178,20 @@ static void collide(float* px, float* pz) {
 // which the host reads back into BOTH the collision world and the renderer
 // declares. Player table is read-only this round.
 static lua_State* g_L = NULL;
+
+// play_sound("jump"|"land"|"step"|"bump"|"blip" [, gain]) — script audio hook
+static int l_play_sound(lua_State* L) {
+    static const char* names[FdAudio::SOUND_COUNT] =
+        { "jump", "land", "step", "bump", "blip" };
+    const char* want = luaL_checkstring(L, 1);
+    float gain = (float)luaL_optnumber(L, 2, 1.0);
+    for (int i = 0; i < FdAudio::SOUND_COUNT; ++i)
+        if (strcmp(want, names[i]) == 0) {
+            g_audio.play((FdAudio::Sound)i, gain);
+            return 0;
+        }
+    return luaL_error(L, "play_sound: unknown sound '%s'", want);
+}
 
 static float lua_field_num(lua_State* L, const char* k, float dflt) {
     lua_getfield(L, -1, k);
@@ -187,6 +207,8 @@ static bool load_script(const char* path) {
 
     g_L = luaL_newstate();
     luaL_openlibs(g_L);
+    lua_pushcfunction(g_L, l_play_sound);
+    lua_setglobal(g_L, "play_sound");
     if (luaL_dofile(g_L, path) != LUA_OK) {
         fprintf(stderr, "fd-game: lua error in %s: %s\n", path, lua_tostring(g_L, -1));
         lua_close(g_L); g_L = NULL;
@@ -332,16 +354,35 @@ struct Input { float move = 0, turn = 0; bool jump = false; };
 
 static void simulate(Player& p, const Input& in, float dt) {
     p.yaw += in.turn * TURN_RATE * dt;
-    if (in.move != 0) {
+    bool moving = in.move != 0;
+    if (moving) {
+        float prev_step = p.step;
         p.step += STEP_RATE * dt * (in.move > 0 ? 1 : -1);
+        // footstep on each half-cycle of the leg swing (sin zero crossings)
+        if (p.grounded && (long)floorf(prev_step / (float)M_PI) !=
+                          (long)floorf(p.step / (float)M_PI))
+            g_audio.play(FdAudio::STEP, 0.6f);
         p.x += sinf(p.yaw) * in.move * SPEED * dt;
         p.z += cosf(p.yaw) * in.move * SPEED * dt;
     }
-    collide(&p.x, &p.z);     // always: dynamic boxes can move INTO the player
-    if (in.jump && p.grounded) { p.jv = JUMP_V; p.grounded = false; }
+    // always collide: dynamic boxes can move INTO the player. Bump audio only
+    // when the player is driving into geometry, rate-limited by the cooldown.
+    static float bump_cool = 0;
+    bump_cool = fmaxf(0.0f, bump_cool - dt);
+    if (collide(&p.x, &p.z) && moving && bump_cool == 0.0f) {
+        g_audio.play(FdAudio::BUMP, 0.8f);
+        bump_cool = 0.25f;
+    }
+    if (in.jump && p.grounded) {
+        p.jv = JUMP_V; p.grounded = false;
+        g_audio.play(FdAudio::JUMP);
+    }
     if (!p.grounded) {
         p.jv += GRAV * dt; p.jy += p.jv * dt;
-        if (p.jy <= 0) { p.jy = 0; p.jv = 0; p.grounded = true; }
+        if (p.jy <= 0) {
+            p.jy = 0; p.jv = 0; p.grounded = true;
+            g_audio.play(FdAudio::LAND);
+        }
     }
 }
 
@@ -399,6 +440,14 @@ static int selftest(FdRenderer& r, int frames) {
         printf("  dynamic patrol box: peak deviation %.2f — %s\n", max_dev,
                script_ok ? "MOVED (script driving world)" : "DID NOT MOVE");
     }
+    // audio hooks must fire even with no device: walk = steps, wall = bump,
+    // the scripted jump = jump + land
+    long steps = g_audio.triggers[FdAudio::STEP], bumps = g_audio.triggers[FdAudio::BUMP];
+    long jumps = g_audio.triggers[FdAudio::JUMP], lands = g_audio.triggers[FdAudio::LAND];
+    bool audio_ok = steps > 0 && bumps > 0 && jumps == 1 && lands == 1;
+    printf("  audio triggers: %ld steps, %ld bumps, %ld jump, %ld land (device %s) — %s\n",
+           steps, bumps, jumps, lands, g_audio.device_ok() ? "open" : "absent",
+           audio_ok ? "HOOKS FIRED" : "HOOKS MISSING");
     FILE* f = fopen("fd_game_selftest.ppm", "wb");
     if (f) {
         fprintf(f, "P6\n%u %u\n255\n", r.fb_w, r.fb_h);
@@ -406,7 +455,7 @@ static int selftest(FdRenderer& r, int frames) {
         fclose(f);
         printf("  last frame -> fd_game_selftest.ppm\n");
     }
-    return (p.z <= zmax && script_ok) ? 0 : 1;
+    return (p.z <= zmax && script_ok && audio_ok) ? 0 : 1;
 }
 
 // ============================ interactive (SDL2) =============================
@@ -487,6 +536,10 @@ int main(int argc, char** argv) {
         default_world();
     }
 
+    // optional: a silent box is a playable box (triggers still count headless)
+    printf("fd-game: audio %s\n", g_audio.init() ? "open (procedural synth, 5 sfx)"
+                                                 : "unavailable — running silent");
+
     FdRenderer r;
     if (!r.connect_to(sock)) {
         fprintf(stderr, "fd-game: cannot connect to %s -- is fd-daemon running?\n", sock);
@@ -494,6 +547,7 @@ int main(int argc, char** argv) {
     }
     if (!r.scene(build_scene())) { fprintf(stderr, "fd-game: scene rejected\n"); return 1; }
     int rc = st ? selftest(r, frames) : play(r, winW, winH, rdiv < 1 ? 1 : rdiv);
+    g_audio.shutdown();
     if (g_L) lua_close(g_L);
     return rc;
 }
