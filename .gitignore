@@ -7,3 +7,4 @@ daemon/*.o
 daemon/walk
 daemon/fd-daemon
 daemon/__pycache__/
+game/fd-game
