@@ -22,6 +22,7 @@ run "engine regression (arena selftest)"     ./fd-game --selftest 180 "$SOCK" ar
 run "RELIC SWEEP logic (gametest)"           ./fd-game --gametest 180 "$SOCK" relic_sweep.lua
 run "CRATE CLIMB platforming (gametest)"     ./fd-game --gametest 240 "$SOCK" crate_climb.lua
 run "GOLDEN ACORN level 1 (gametest)"        ./fd-game --gametest 240 "$SOCK" chunkins1.lua
+run "GOLDEN ACORN world 4 (gametest)"        ./fd-game --gametest 240 "$SOCK" chunkins4.lua
 
 echo "=== level-chain transition (test_win1 -> test_win2)"
 CHAIN=$(SDL_AUDIODRIVER=dummy ./fd-game --gametest 300 "$SOCK" test_win1.lua)

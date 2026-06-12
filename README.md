@@ -41,17 +41,41 @@ renderer — trace-bound, not overhead-bound.
 See **[FINDINGS.md](FINDINGS.md)** for the full measured story (and the
 `.kkrieger`-inspired further optimizations for heavy scenes).
 
+## 🐿️ CHUNKINS: The Search for the Golden Acorn
+
+There is a whole **game** in here, raytraced live at ~100 fps: Chunkins the
+squirrel platforms through a four-world quest — meadow, crate heights, acorn
+mountain, and the thief's hollow — stomping glowing-eyed baddies, dodging an
+acorn-stealing thief, and hunting the Golden Acorn. Every level is a plain
+Lua file (`game/chunkins*.lua`); the engine has no idea what a squirrel is.
+
+```bash
+./tools/build_engine.sh          # clones POV-Ray 3.7, patches, builds
+daemon/fd-daemon &               # the resident raytracer (AGPL side)
+cd game && make && ./fd-game     # the game (MIT side; FD_GPU=1 for CUDA post)
+```
+
+WASD/arrows move, SPACE jumps (and stomps), ESC quits. The architecture is a
+strict two-process split: the AGPL renderer daemon speaks a tiny socket
+protocol (`daemon/PROTOCOL.md`), and the MIT game feeds it plain POV scene
+text plus name=float declares. Characters are just scene text — the original
+stick-man hero is preserved as a worked example in `game/reference/`, ready
+to render standalone or swap back in.
+
 ## Status
 
 | Piece | State |
 |---|---|
 | Benchmark proving the thesis (`bench.sh`) | ✅ real, reproducible |
 | Architecture, reviewed by 3 independent models | ✅ see `ARCHITECTURE.md` |
-| Daemon wire protocol | ✅ spec'd (`daemon/PROTOCOL.md`) |
+| Daemon wire protocol | ✅ implemented (`daemon/PROTOCOL.md`, `fd-daemon`) |
 | Resident POV-Ray daemon (frontend patch) | ✅ built — **77 fps**, real-time |
 | Backend driver-loop delays cut (the 60fps wall) | ✅ done — see FINDINGS.md |
+| Phase 2: task pool + sequence cache (the 33% bug) | ✅ done — 2.34 ms floor, ~140 fps |
 | SDL2 live window + orbit controls (`daemon/live.cpp`) | ✅ built |
-| DLSS-style temporal upscale on RTX 5070 | ⛅ planned (`ROADMAP.md`) |
+| **CHUNKINS — 4-world raytraced platformer** | ✅ playable (`game/`) |
+| Lua scripting, procedural+CC0 audio, GPU temporal post (RTX 4070) | ✅ shipped |
+| DLSS-style temporal reprojection | ⛅ next (`ROADMAP.md`) |
 
 This is a sibling to [bottube-feverdream](https://github.com/Scottcjn/bottube-feverdream)
 (the batch pre-render pipeline). **The batch pipeline is untouched** — the
