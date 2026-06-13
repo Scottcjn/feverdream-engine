@@ -78,7 +78,8 @@ local collected, invuln = {}, 0
 local heart_taken, star_taken, star_t = false, false, 0
 
 worlds = { "chunkins1.lua", "chunkins2.lua", "chunkins3.lua", "chunkins4.lua",
-           "chunkins5.lua", "chunkins_hazelnut_bridges.lua", "chunkins7.lua", "chunkins8.lua" }
+           "chunkins5.lua", "chunkins_hazelnut_bridges.lua", "chunkins7.lua",
+           "chunkins8.lua", "chunkins_bridge_garden.lua" }
 
 local function run_baddies(t, dt, player)
   invuln = math.max(0, invuln - dt)
