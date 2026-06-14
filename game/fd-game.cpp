@@ -221,10 +221,10 @@ private:
 // ============================ world + tuning =================================
 enum BoxShape { SHAPE_BOX = 0, SHAPE_ACORN, SHAPE_BADDIE,
                 SHAPE_HEART, SHAPE_STAR, SHAPE_CHOMP,
-                SHAPE_WATERFALL, SHAPE_LEAF };
+                SHAPE_WATERFALL, SHAPE_LEAF, SHAPE_NPC };
 struct Aabb { float cx, cz, hx, hz, h; bool dyn; float r, g; float cy; bool solid;
-              int shape;       // BoxShape — "acorn"/"baddie" in the script
-              float ry; };     // facing (deg), baddies only — script-driven
+              int shape;       // BoxShape — "acorn"/"baddie"/"npc"/... in the script
+              float ry; };     // facing (deg) for baddies/chomps/npcs — script-driven
 static std::vector<Aabb> g_world;
 static float P_RADIUS = 0.45f;
 
@@ -410,7 +410,7 @@ static bool load_script(const char* path) {
             lua_getfield(g_L, -1, "solid");          // default true; collectibles
             b.solid = lua_isnil(g_L, -1) || lua_toboolean(g_L, -1) != 0;
             lua_pop(g_L, 1);
-            lua_getfield(g_L, -1, "shape");          // "acorn"|"baddie"|box
+            lua_getfield(g_L, -1, "shape");          // "acorn"|"baddie"|"npc"|...|box
             b.shape = SHAPE_BOX;
             if (lua_isstring(g_L, -1)) {
                 const char* sh = lua_tostring(g_L, -1);
@@ -421,6 +421,7 @@ static bool load_script(const char* path) {
                 if (strcmp(sh, "chomp") == 0)  b.shape = SHAPE_CHOMP;
                 if (strcmp(sh, "waterfall") == 0) b.shape = SHAPE_WATERFALL;
                 if (strcmp(sh, "leaf") == 0)   b.shape = SHAPE_LEAF;
+                if (strcmp(sh, "npc") == 0)    b.shape = SHAPE_NPC;
             }
             lua_pop(g_L, 1);
             b.ry = lua_field_num(g_L, "ry", 0);
@@ -759,6 +760,46 @@ static std::string build_scene() {
                 0.09f*s, 0.64f*s, 0.50f*s, 0.035f*s,           // eye R
                 0.30f*s, 0.40f*s, 0.09f*s, 0.55f*s, 0.85f*s,   // tail
                 i, i, i, i);
+        } else if (b.dyn && b.shape == SHAPE_NPC) {
+            // a FRIENDLY critter: same build as the prowler but in its OWN
+            // colour (from the box's r,g) with soft dark eyes, so it never
+            // reads as an enemy. Used for the helper NPCs (Mabel, Whiskers...).
+            float s = b.h / 0.9f;
+            float nr = b.r, ng = b.g, nb = (b.r + b.g) * 0.45f;   // body tone
+            float hr = nr * 0.9f, hg = ng * 0.9f, hb = nb * 0.9f; // ears/snout/tail
+            n = snprintf(buf, sizeof buf,
+                "#ifndef (BOX%zuX) #declare BOX%zuX=%.2f; #end\n"
+                "#ifndef (BOX%zuY) #declare BOX%zuY=%.2f; #end\n"
+                "#ifndef (BOX%zuZ) #declare BOX%zuZ=%.2f; #end\n"
+                "#ifndef (BOX%zuR) #declare BOX%zuR=0; #end\n"
+                "union {\n"
+                "  sphere { 0, %.2f scale <1.05,0.80,1.30> translate <0,%.2f,0>"
+                "    pigment { rgb <%.2f,%.2f,%.2f> } finish { phong 0.5 } }\n"
+                "  sphere { 0, %.2f translate <0,%.2f,%.2f>"
+                "    pigment { rgb <%.2f,%.2f,%.2f> } finish { phong 0.5 } }\n"
+                "  cone { <0,%.2f,%.2f>, %.2f, <0,%.2f,%.2f>, 0"
+                "    pigment { rgb <%.2f,%.2f,%.2f> } }\n"
+                "  cone { <-%.2f,%.2f,%.2f>, %.2f, <-%.2f,%.2f,%.2f>, 0"
+                "    pigment { rgb <%.2f,%.2f,%.2f> } }\n"
+                "  cone { <%.2f,%.2f,%.2f>, %.2f, <%.2f,%.2f,%.2f>, 0"
+                "    pigment { rgb <%.2f,%.2f,%.2f> } }\n"
+                "  sphere { <-%.2f,%.2f,%.2f>, %.3f"
+                "    pigment { rgb <0.10,0.10,0.12> } finish { phong 0.8 } }\n"
+                "  sphere { <%.2f,%.2f,%.2f>, %.3f"
+                "    pigment { rgb <0.10,0.10,0.12> } finish { phong 0.8 } }\n"
+                "  cone { <0,%.2f,-%.2f>, %.2f, <0,%.2f,-%.2f>, 0"
+                "    pigment { rgb <%.2f,%.2f,%.2f> } }\n"
+                "  rotate y*BOX%zuR translate <BOX%zuX,BOX%zuY,BOX%zuZ> }\n",
+                i, i, b.cx, i, i, b.cy, i, i, b.cz, i, i,
+                0.34f*s, 0.34f*s, nr, ng, nb,                       // body
+                0.21f*s, 0.58f*s, 0.34f*s, nr, ng, nb,             // head
+                0.55f*s, 0.46f*s, 0.10f*s, 0.52f*s, 0.68f*s, hr, hg, hb,           // snout
+                0.12f*s, 0.74f*s, 0.26f*s, 0.07f*s, 0.14f*s, 0.94f*s, 0.24f*s, hr, hg, hb, // ear L
+                0.12f*s, 0.74f*s, 0.26f*s, 0.07f*s, 0.14f*s, 0.94f*s, 0.24f*s, hr, hg, hb, // ear R
+                0.09f*s, 0.64f*s, 0.50f*s, 0.035f*s,               // eye L
+                0.09f*s, 0.64f*s, 0.50f*s, 0.035f*s,               // eye R
+                0.30f*s, 0.40f*s, 0.09f*s, 0.55f*s, 0.85f*s, hr, hg, hb,  // tail
+                i, i, i, i);
         } else if (b.dyn && b.shape == SHAPE_HEART) {
             // health pickup: two lobes + a diamond point, glossy red
             float s = b.h / 0.5f;
@@ -1036,7 +1077,8 @@ static std::vector<Declare> declares_for(const Player& p) {
         // prey, stars spin, dyn SOLID boxes rotate, waterfalls SCROLL (R is
         // the water phase there, not a yaw)
         if (g_world[i].shape == SHAPE_BADDIE || g_world[i].shape == SHAPE_CHOMP ||
-            g_world[i].shape == SHAPE_STAR || g_world[i].shape == SHAPE_WATERFALL ||
+            g_world[i].shape == SHAPE_NPC || g_world[i].shape == SHAPE_STAR ||
+            g_world[i].shape == SHAPE_WATERFALL ||
             (g_world[i].shape == SHAPE_BOX && g_world[i].solid)) {
             snprintf(nm, sizeof nm, "BOX%zuR", i); d.push_back({nm, g_world[i].ry});
         }
@@ -1279,6 +1321,7 @@ static void draw_minimap(SDL_Renderer* ren, int winW, int winH, const Player& p)
             case SHAPE_BADDIE:
             case SHAPE_CHOMP:  SDL_SetRenderDrawColor(ren, 200, 40, 40, 255);
                                d.w = d.h = 6; break;
+            case SHAPE_NPC:    SDL_SetRenderDrawColor(ren, 90, 210, 230, 255); break;  // friendly = cyan
             default: continue;
         }
         SDL_RenderFillRect(ren, &d);
