@@ -9,7 +9,7 @@
 -- (bottom-right) — gold dots are acorns, red dots are trouble.
 
 game_title = "Golden Acorn 7: Cascade Hollow"
--- terminal: the quest ends at the top of the world
+next_level = "chunkins8.lua"   -- onward to the boss: THE MAGPIE KING
 
 config = {
   speed = 5.2, turn_rate = 3.0, step_rate = 12.0,
@@ -78,7 +78,7 @@ local collected, invuln = {}, 0
 local heart_taken, star_taken, star_t = false, false, 0
 
 worlds = { "chunkins1.lua", "chunkins2.lua", "chunkins3.lua", "chunkins4.lua",
-           "chunkins5.lua", "chunkins_hazelnut_bridges.lua", "chunkins7.lua" }
+           "chunkins5.lua", "chunkins_hazelnut_bridges.lua", "chunkins7.lua", "chunkins8.lua" }
 
 local function run_baddies(t, dt, player)
   invuln = math.max(0, invuln - dt)
