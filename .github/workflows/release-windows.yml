@@ -1,0 +1,111 @@
+# Build the Windows game client (fd-game.exe) with embedded provenance, sign it
+# via SignPath (Authenticode), and attach the package to a GitHub Release.
+#
+# The build runs unsigned today; the SignPath step is GUARDED on the
+# SIGNPATH_ORGANIZATION_ID repo variable, so it activates automatically once you
+# register the project on SignPath and add the secrets/vars (see
+# game/SIGNPATH_SETUP.md). Until then the workflow still produces an unsigned
+# (but version-stamped) package — that alone clears most heuristic AV flags.
+name: Windows Release (signed)
+
+on:
+  release:
+    types: [published]          # signs + attaches when you publish a release
+  workflow_dispatch:            # or run manually
+    inputs:
+      release_tag:
+        description: "Existing release tag to attach the package to (e.g. v0.3.2)"
+        required: true
+
+permissions:
+  contents: write               # upload assets to the release
+
+jobs:
+  build-sign-release:
+    runs-on: ubuntu-latest
+    env:
+      SDL_VER: "2.32.4"
+      LUA_VER: "5.4.8"
+      PKG: feverdream-chunkins-win64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install mingw-w64 toolchain
+        run: sudo apt-get update && sudo apt-get install -y mingw-w64 zip
+
+      - name: Fetch Windows deps (SDL2 mingw devel + static Lua)
+        working-directory: game
+        run: |
+          set -eu
+          mkdir -p win-deps && cd win-deps
+          curl -fsSL -o sdl.tar.gz \
+            "https://github.com/libsdl-org/SDL/releases/download/release-${SDL_VER}/SDL2-devel-${SDL_VER}-mingw.tar.gz"
+          tar xzf sdl.tar.gz
+          curl -fsSL -o lua.tar.gz "https://www.lua.org/ftp/lua-${LUA_VER}.tar.gz"
+          tar xzf lua.tar.gz
+          make -C "lua-${LUA_VER}" mingw \
+            CC=x86_64-w64-mingw32-gcc AR='x86_64-w64-mingw32-ar rcu' RANLIB=x86_64-w64-mingw32-ranlib
+
+      - name: Build fd-game.exe (with version resource + manifest + icon)
+        working-directory: game
+        run: ./build-windows.sh
+
+      - name: Stage release package
+        working-directory: game
+        run: |
+          set -eu
+          mkdir -p "dist/${PKG}"
+          cp fd-game.exe SDL2.dll splash.pov WINDOWS_ANTIVIRUS.md "dist/${PKG}/"
+          cp chunkins*.lua arena.lua "dist/${PKG}/"
+          cp -r assets "dist/${PKG}/"
+
+      # Upload the staged exe so SignPath can pull it by artifact id.
+      - name: Upload unsigned artifact
+        id: upload
+        uses: actions/upload-artifact@v4
+        with:
+          name: fd-game-unsigned
+          path: game/dist/${{ env.PKG }}/fd-game.exe
+
+      # --- SignPath Authenticode signing (auto-skips until configured) --------
+      - name: Submit signing request to SignPath
+        id: sign
+        if: ${{ vars.SIGNPATH_ORGANIZATION_ID != '' }}
+        uses: signpath/github-action-submit-signing-request@v1
+        with:
+          api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
+          organization-id: ${{ vars.SIGNPATH_ORGANIZATION_ID }}
+          project-slug: ${{ vars.SIGNPATH_PROJECT_SLUG }}
+          signing-policy-slug: ${{ vars.SIGNPATH_POLICY_SLUG }}
+          artifact-configuration-slug: ${{ vars.SIGNPATH_ARTIFACT_SLUG }}
+          github-artifact-id: ${{ steps.upload.outputs.artifact-id }}
+          wait-for-completion: true
+          output-artifact-directory: game/dist/${{ env.PKG }}
+
+      - name: Note signing status
+        run: |
+          if [ -n "${{ vars.SIGNPATH_ORGANIZATION_ID }}" ]; then
+            echo "fd-game.exe submitted to SignPath and replaced with the SIGNED copy."
+          else
+            echo "::notice::SignPath not configured (SIGNPATH_ORGANIZATION_ID unset) — packaging UNSIGNED. See game/SIGNPATH_SETUP.md."
+          fi
+
+      - name: Zip the package
+        working-directory: game/dist
+        run: zip -rq "${PKG}.zip" "${PKG}"
+
+      - name: Resolve release tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            echo "tag=${{ github.event.release.tag_name }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${{ github.event.inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Attach package to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload "${{ steps.tag.outputs.tag }}" \
+            "game/dist/${PKG}.zip" --clobber
