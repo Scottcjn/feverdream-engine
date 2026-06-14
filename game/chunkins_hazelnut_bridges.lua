@@ -57,7 +57,7 @@ boxes = {
   { cx = -4.0, cz = 13.0, hx = 0.26, hz = 0.26, h = 0.5, r = 0.78, g = 0.56, dyn = true, solid = false, shape = "acorn" },
   -- [25] HAZEL the squirrel-friend on the far island — she holds the STAR and
   -- hands it over once every acorn is gathered.
-  { cx =  0.0, cz = 14.5, hx = 0.45, hz = 0.45, h = 0.6, cy = 0, dyn = true, r = 0.90, g = 0.52, shape = "baddie" },
+  { cx =  0.0, cz = 14.5, hx = 0.45, hz = 0.45, h = 0.6, cy = 0, dyn = true, r = 0.90, g = 0.52, shape = "npc" },
   -- [26] the STAR exit (Hazel reveals it when the count is full)
   { cx =  0.0, cz = 14.5, hx = 0.3, hz = 0.3, h = 0.5, cy = -10, dyn = true, solid = false, shape = "star" },
 }

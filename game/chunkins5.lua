@@ -50,7 +50,7 @@ boxes = {
   { cx =  7.0,  cz =  7.5, hx = 0.26, hz = 0.26, h = 0.5, r = 0.78, g = 0.56, dyn = true, solid = false, shape = "acorn" },
   -- [20] WHISKERS the cat (friendly) — reach her and she yowls Biscuit into a
   -- long stun so you can raid his yard. She needs a moment between yowls.
-  { cx =  2.5,  cz =  6.0, hx = 0.45, hz = 0.45, h = 0.55, cy = 0, dyn = true, r = 0.86, g = 0.86, shape = "baddie" },
+  { cx =  2.5,  cz =  6.0, hx = 0.45, hz = 0.45, h = 0.55, cy = 0, dyn = true, r = 0.92, g = 0.92, shape = "npc" },
   -- [21] BOUNCE PAD (orange) at the stash-tower base — spring up to the top
   { cx = -11.5, cz =  8.4, hx = 1.0, hz = 1.0, h = 0.20, r = 0.95, g = 0.55 },
 }

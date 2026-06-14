@@ -34,7 +34,7 @@ boxes = {
   { cx =  10, cz = 11, hx = 2.2, hz = 0.6, h = 1.2, r = 0.20, g = 0.48 },
   { cx =  10, cz =  7, hx = 2.2, hz = 0.6, h = 1.2, r = 0.22, g = 0.40, dyn = true },  -- the gate
   -- 11: MABEL THE MOLE (friendly NPC — approach to open the gate)
-  { cx =  8, cz =  5.5, hx = 0.5, hz = 0.5, h = 0.7, cy = 0, dyn = true, r = 0.52, g = 0.34, shape = "baddie" },
+  { cx =  8, cz =  5.5, hx = 0.5, hz = 0.5, h = 0.7, cy = 0, dyn = true, r = 0.52, g = 0.34, shape = "npc" },
   -- 12: the STAR exit (hidden until every acorn is found)
   { cx =  0, cz =  0, hx = 0.4, hz = 0.4, h = 0.6, cy = -10, dyn = true, solid = false, shape = "star" },
   -- 13-17: five acorns
