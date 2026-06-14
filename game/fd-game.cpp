@@ -221,7 +221,7 @@ private:
 // ============================ world + tuning =================================
 enum BoxShape { SHAPE_BOX = 0, SHAPE_ACORN, SHAPE_BADDIE,
                 SHAPE_HEART, SHAPE_STAR, SHAPE_CHOMP,
-                SHAPE_WATERFALL, SHAPE_LEAF, SHAPE_NPC };
+                SHAPE_WATERFALL, SHAPE_LEAF, SHAPE_NPC, SHAPE_BOSS };
 struct Aabb { float cx, cz, hx, hz, h; bool dyn; float r, g; float cy; bool solid;
               int shape;       // BoxShape — "acorn"/"baddie"/"npc"/... in the script
               float ry; };     // facing (deg) for baddies/chomps/npcs — script-driven
@@ -422,6 +422,7 @@ static bool load_script(const char* path) {
                 if (strcmp(sh, "waterfall") == 0) b.shape = SHAPE_WATERFALL;
                 if (strcmp(sh, "leaf") == 0)   b.shape = SHAPE_LEAF;
                 if (strcmp(sh, "npc") == 0)    b.shape = SHAPE_NPC;
+                if (strcmp(sh, "boss") == 0)   b.shape = SHAPE_BOSS;
             }
             lua_pop(g_L, 1);
             b.ry = lua_field_num(g_L, "ry", 0);
@@ -800,6 +801,46 @@ static std::string build_scene() {
                 0.09f*s, 0.64f*s, 0.50f*s, 0.035f*s,               // eye R
                 0.30f*s, 0.40f*s, 0.09f*s, 0.55f*s, 0.85f*s, hr, hg, hb,  // tail
                 i, i, i, i);
+        } else if (b.dyn && b.shape == SHAPE_BOSS) {
+            // THE MAGPIE KING: a giant thieving magpie — blue-black body, white
+            // belly, long orange beak, broad wings, sweeping tail, glowing eyes.
+            // BOX<i>R turns him to face Chunkins. Palette is fixed (a magpie),
+            // so only geometry scales with b.h.
+            float s = b.h / 2.4f;
+            n = snprintf(buf, sizeof buf,
+                "#ifndef (BOX%zuX) #declare BOX%zuX=%.2f; #end\n"
+                "#ifndef (BOX%zuY) #declare BOX%zuY=%.2f; #end\n"
+                "#ifndef (BOX%zuZ) #declare BOX%zuZ=%.2f; #end\n"
+                "#ifndef (BOX%zuR) #declare BOX%zuR=0; #end\n"
+                "union {\n"
+                "  sphere { 0, %.2f scale <1.0,0.95,1.25> translate <0,%.2f,0>"
+                "    pigment { rgb <0.10,0.11,0.18> } finish { phong 0.7 } }\n"
+                "  sphere { 0, %.2f scale <0.85,0.95,0.70> translate <0,%.2f,%.2f>"
+                "    pigment { rgb <0.92,0.93,0.96> } finish { phong 0.5 } }\n"
+                "  sphere { 0, %.2f translate <0,%.2f,%.2f>"
+                "    pigment { rgb <0.09,0.10,0.17> } finish { phong 0.7 } }\n"
+                "  cone { <0,%.2f,%.2f>, %.2f, <0,%.2f,%.2f>, 0"
+                "    pigment { rgb <0.88,0.66,0.16> } finish { phong 0.8 } }\n"
+                "  sphere { <-%.2f,%.2f,%.2f>, %.2f pigment { rgb <1.0,0.85,0.20> } finish { ambient 0.9 } }\n"
+                "  sphere { <%.2f,%.2f,%.2f>, %.2f pigment { rgb <1.0,0.85,0.20> } finish { ambient 0.9 } }\n"
+                "  sphere { 0, %.2f scale <1.7,0.22,0.95> translate <-%.2f,%.2f,-%.2f>"
+                "    pigment { rgb <0.13,0.14,0.24> } finish { phong 0.7 } }\n"
+                "  sphere { 0, %.2f scale <1.7,0.22,0.95> translate <%.2f,%.2f,-%.2f>"
+                "    pigment { rgb <0.13,0.14,0.24> } finish { phong 0.7 } }\n"
+                "  cone { <0,%.2f,-%.2f>, %.2f, <0,%.2f,-%.2f>, 0"
+                "    pigment { rgb <0.11,0.12,0.21> } finish { phong 0.6 } }\n"
+                "  rotate y*BOX%zuR translate <BOX%zuX,BOX%zuY,BOX%zuZ> }\n",
+                i, i, b.cx, i, i, b.cy, i, i, b.cz, i, i,
+                0.90f*s, 1.00f*s,                              // body
+                0.55f*s, 0.85f*s, 0.42f*s,                     // belly
+                0.48f*s, 1.85f*s, 0.22f*s,                     // head
+                1.80f*s, 0.55f*s, 0.16f*s, 1.74f*s, 1.35f*s,   // beak
+                0.20f*s, 1.96f*s, 0.52f*s, 0.10f*s,            // eye L
+                0.20f*s, 1.96f*s, 0.52f*s, 0.10f*s,            // eye R
+                0.75f*s, 1.00f*s, 1.15f*s, 0.10f*s,            // wing L
+                0.75f*s, 1.00f*s, 1.15f*s, 0.10f*s,            // wing R
+                0.85f*s, 0.75f*s, 0.32f*s, 0.70f*s, 2.00f*s,   // tail
+                i, i, i, i);
         } else if (b.dyn && b.shape == SHAPE_HEART) {
             // health pickup: two lobes + a diamond point, glossy red
             float s = b.h / 0.5f;
@@ -1077,7 +1118,8 @@ static std::vector<Declare> declares_for(const Player& p) {
         // prey, stars spin, dyn SOLID boxes rotate, waterfalls SCROLL (R is
         // the water phase there, not a yaw)
         if (g_world[i].shape == SHAPE_BADDIE || g_world[i].shape == SHAPE_CHOMP ||
-            g_world[i].shape == SHAPE_NPC || g_world[i].shape == SHAPE_STAR ||
+            g_world[i].shape == SHAPE_NPC || g_world[i].shape == SHAPE_BOSS ||
+            g_world[i].shape == SHAPE_STAR ||
             g_world[i].shape == SHAPE_WATERFALL ||
             (g_world[i].shape == SHAPE_BOX && g_world[i].solid)) {
             snprintf(nm, sizeof nm, "BOX%zuR", i); d.push_back({nm, g_world[i].ry});
@@ -1322,6 +1364,8 @@ static void draw_minimap(SDL_Renderer* ren, int winW, int winH, const Player& p)
             case SHAPE_CHOMP:  SDL_SetRenderDrawColor(ren, 200, 40, 40, 255);
                                d.w = d.h = 6; break;
             case SHAPE_NPC:    SDL_SetRenderDrawColor(ren, 90, 210, 230, 255); break;  // friendly = cyan
+            case SHAPE_BOSS:   SDL_SetRenderDrawColor(ren, 180, 60, 200, 255);         // boss = big purple dot
+                               d.w = d.h = 9; break;
             default: continue;
         }
         SDL_RenderFillRect(ren, &d);
