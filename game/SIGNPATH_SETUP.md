@@ -9,7 +9,7 @@ version-stamped* package (which already clears most heuristic flags).
 ## One-time setup
 
 ### 1. Register the project on SignPath
-- Go to https://signpath.io/open-source and apply with this repo
+- Go to https://signpath.org and click "Apply for Free Code Signing", then apply with this repo
   (`Scottcjn/feverdream-engine`). Approval is free for OSS.
 - In the SignPath console, create:
   - a **Project** (note its *slug*, e.g. `feverdream-engine`),
