@@ -81,6 +81,14 @@ This is a sibling to [bottube-feverdream](https://github.com/Scottcjn/bottube-fe
 (the batch pre-render pipeline). **The batch pipeline is untouched** — the
 resident engine is a separate track, not a replacement.
 
+## Windows builds & code signing
+
+Windows binaries (`fd-game.exe`) are code-signed using a free certificate
+provided by the [SignPath Foundation](https://signpath.org). Signing happens in
+CI on release (see `.github/workflows/release-windows.yml`); the signature gives
+a verifiable link between this repository and the published binary. If your
+antivirus still flags an unsigned/older build, see `game/WINDOWS_ANTIVIRUS.md`.
+
 ## License
 
 POV-Ray 3.7 is **AGPLv3**. A patched, distributed daemon is a derivative work
