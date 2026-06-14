@@ -17,10 +17,16 @@ LUA=win-deps/lua-5.4.8/src
 [ -d "$SDL" ] || { echo "build-windows: missing $SDL — run the deps fetch first"; exit 1; }
 [ -f "$LUA/liblua.a" ] || { echo "build-windows: missing $LUA/liblua.a — build Lua for mingw first"; exit 1; }
 
+# Embed version info + manifest + icon so the exe carries real provenance — a
+# bare metadata-less exe is the classic antivirus false-positive profile. (The
+# other half of the fix is Authenticode code signing; see WINDOWS_ANTIVIRUS.md.)
+echo "build-windows: compiling resources (version info + manifest + icon)..."
+x86_64-w64-mingw32-windres fd-game.rc -O coff -o fd-game-res.o
+
 echo "build-windows: compiling fd-game.exe (mingw-w64)..."
 $CXX -O2 -Wall -Werror=format -std=c++11 -D__USE_MINGW_ANSI_STDIO=1 \
     -I"$SDL/include" -I"$SDL/include/SDL2" -I"$LUA" \
-    -o fd-game.exe fd-game.cpp \
+    -o fd-game.exe fd-game.cpp fd-game-res.o \
     -L"$SDL/lib" -L"$LUA" \
     -lmingw32 -lSDL2main -lSDL2 -llua \
     -lws2_32 \

@@ -20,3 +20,5 @@ game/win-deps/
 daemon/fd-daemon.exe
 daemon/*.obj
 daemon/*.log
+
+game/fd-game-res.o

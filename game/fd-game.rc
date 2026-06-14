@@ -1,0 +1,39 @@
+// fd-game.rc — Windows resources for the Chunkins / Feverdream game client.
+// Embeds version info, an application manifest, and an icon so the binary
+// carries real provenance. A bare, metadata-less, unsigned exe is the classic
+// antivirus false-positive profile; this is the no-cost half of the fix (the
+// other half is Authenticate code signing — see WINDOWS_ANTIVIRUS.md).
+#include <windows.h>
+
+1 ICON "fd-game.ico"
+1 RT_MANIFEST "fd-game.manifest"
+
+VS_VERSION_INFO VERSIONINFO
+ FILEVERSION    0,3,1,0
+ PRODUCTVERSION 0,3,1,0
+ FILEFLAGSMASK  0x3fL
+ FILEFLAGS      0x0L
+ FILEOS         VOS_NT_WINDOWS32
+ FILETYPE       VFT_APP
+ FILESUBTYPE    VFT2_UNKNOWN
+BEGIN
+  BLOCK "StringFileInfo"
+  BEGIN
+    BLOCK "040904b0"
+    BEGIN
+      VALUE "CompanyName",      "Elyan Labs"
+      VALUE "FileDescription",  "Chunkins: The Search for the Golden Acorn (Feverdream Engine)"
+      VALUE "FileVersion",      "0.3.1.0"
+      VALUE "InternalName",     "fd-game"
+      VALUE "LegalCopyright",   "Copyright (C) 2026 Elyan Labs. MIT licensed."
+      VALUE "OriginalFilename", "fd-game.exe"
+      VALUE "ProductName",      "Chunkins / Feverdream Engine"
+      VALUE "ProductVersion",   "0.3.1.0"
+      VALUE "Comments",         "Open source: https://github.com/Scottcjn/feverdream-engine"
+    END
+  END
+  BLOCK "VarFileInfo"
+  BEGIN
+    VALUE "Translation", 0x409, 1200
+  END
+END
