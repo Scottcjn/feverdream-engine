@@ -54,9 +54,15 @@ boxes = {
   { cx = 14.0,  cz =  4.0,  hx = 0.26, hz = 0.26, h = 0.5, r = 0.78, g = 0.56, dyn = true, solid = false, shape = "acorn" },
   { cx =  1.5,  cz = 20.3,  hx = 0.26, hz = 0.26, h = 0.5, r = 0.78, g = 0.56, dyn = true, solid = false, shape = "acorn" },
   { cx =  0.0,  cz = 18.6,  hx = 0.26, hz = 0.26, h = 0.5, r = 0.78, g = 0.56, dyn = true, solid = false, shape = "acorn" },
+  -- [28] BOUNCE PAD (orange) at the oak's foot — spring up to the first leaf
+  { cx = 11.6, cz =  1.4, hx = 1.0, hz = 1.0, h = 0.20, r = 0.95, g = 0.55 },
 }
 
 local FALLS = boxes[6]
+local PAD   = boxes[28]
+-- the middle leaf pads BOB — moving platforms up the Great Oak (ride them up)
+local LEAVES   = { boxes[11], boxes[12], boxes[13], boxes[14] }
+local LEAF_CY  = { 1.1, 2.2, 3.3, 4.4 }
 local BADDIES = {
   { box = boxes[16], speed = 2.2, home = {x=-10, z=-10}, alive = true, respawn = 10 },
   { box = boxes[17], speed = 2.6, home = {x=10,  z=-14}, alive = true, respawn = 10 },
@@ -118,6 +124,20 @@ function on_tick(t, dt, player)
 
   -- the water falls (R = scroll phase; one full texture cycle per second)
   FALLS.ry = (FALLS.ry or 0) + 1.1 * dt
+
+  -- the leaf pads bob — time your hops as they rise and dip (vertical only, so
+  -- Chunkins rides them instead of sliding off)
+  for i, lf in ipairs(LEAVES) do
+    lf.cy = LEAF_CY[i] + 0.35 * math.sin(t * 1.2 + i * 1.3)
+  end
+
+  -- BOUNCE PAD: spring off the orange pad to reach the first leaf
+  if player.grounded and
+     math.abs(player.x - PAD.cx) < PAD.hx + 0.4 and
+     math.abs(player.z - PAD.cz) < PAD.hz + 0.4 then
+    bounce = 11.0
+    play_sound("jump", 1.1)
+  end
 
   -- star power
   star_t = math.max(0, star_t - dt)

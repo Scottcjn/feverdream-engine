@@ -45,13 +45,15 @@ boxes = {
   { cx =  9.5, cz =  6.0, hx = 0.26, hz = 0.26, h = 0.5, r = 0.78, g = 0.56, dyn = true, solid = false, shape = "acorn" },
   { cx = -12,  cz = -6,   hx = 0.26, hz = 0.26, h = 0.5, r = 0.78, g = 0.56, dyn = true, solid = false, shape = "acorn" },
   { cx =  12,  cz = -6,   hx = 0.26, hz = 0.26, h = 0.5, r = 0.78, g = 0.56, dyn = true, solid = false, shape = "acorn" },
-  -- ...and THE REAL GOLDEN ACORN on the den roof, biggest of all
+  -- ...and THE REAL GOLDEN ACORN — it sits high on the den roof (out of reach)
+  -- until you've gathered the other seven, then it lowers to the den pedestal.
   { cx =  0, cz = 10.0, hx = 0.6, hz = 0.6, h = 1.2, r = 1.00, g = 0.84, dyn = true, solid = false, shape = "acorn" },
 }
 
 local BADDIES = {
-  { box = boxes[14], speed = 3.0, home = {x=11,  z=-11}, alive = true, respawn = 8 },
-  { box = boxes[15], speed = 2.5, home = {x=-11, z=-11}, alive = true, respawn = 10 },
+  -- the two prowlers SLEEP at their posts until Chunkins strays too close
+  { box = boxes[14], speed = 3.0, home = {x=11,  z=-11}, alive = true, respawn = 8,  asleep = true, wake = 5.0 },
+  { box = boxes[15], speed = 2.5, home = {x=-11, z=-11}, alive = true, respawn = 10, asleep = true, wake = 5.0 },
   { box = boxes[16], speed = 2.4, home = {x=0,   z=8},   alive = true, respawn = 12, thief = true },
 }
 local ACORNS = { boxes[17], boxes[18], boxes[19], boxes[20], boxes[21],
@@ -78,6 +80,7 @@ local function run_baddies(t, dt, player)
     else
       local dx, dz = player.x - b.cx, player.z - b.cz
       local d = math.sqrt(dx * dx + dz * dz)
+      if bd.asleep and d < bd.wake then bd.asleep = false; play_sound("bump", 0.7) end
       local dirx, dirz = dx, dz
       if bd.thief and stolen then dirx, dirz = -dx, -dz end
       if bd.thief and not stolen then
@@ -104,7 +107,7 @@ local function run_baddies(t, dt, player)
         end
       end
       local dl = math.sqrt(dirx * dirx + dirz * dirz)
-      if dl > 0.05 then
+      if dl > 0.05 and not bd.asleep then       -- a sleeping prowler holds its post
         b.cx = b.cx + dirx / dl * bd.speed * dt
         b.cz = b.cz + dirz / dl * bd.speed * dt
         b.ry = math.deg(math.atan(dirx, dirz))
@@ -125,7 +128,7 @@ local function run_baddies(t, dt, player)
         if bd.thief and stolen then stolen = nil end
         bounce = 7.5
         play_sound("bump", 1.0)
-      elseif over and player.jump < top - 0.15 and invuln <= 0 then
+      elseif over and player.jump < top - 0.15 and invuln <= 0 and not bd.asleep then
         game_lives = game_lives - 1; invuln = 1.5
         play_sound("bump", 1.3)
         local len = math.max(0.2, d)
@@ -139,15 +142,26 @@ end
 function on_tick(t, dt, player)
   if game_state ~= "playing" then return end
   run_baddies(t, dt, player)
+
+  -- gather all SEVEN regular acorns and the Golden Acorn lowers from the
+  -- (unreachable) roof onto the den pedestal at (0, 6) — then go claim it.
+  local reg = 0
+  for i = 1, #ACORNS do if i ~= GOLD and collected[i] then reg = reg + 1 end end
+  local gold_unlocked = reg >= (#ACORNS - 1)
+
   for i, ac in ipairs(ACORNS) do
     if collected[i] then
       ac.cy = -10
     elseif i == stolen then
       -- riding the thief
+    elseif i == GOLD and gold_unlocked then
+      ac.cx, ac.cz = 0, 6.0
+      ac.cy = 0.6 + 0.18 * math.sin(t * 2.5)        -- now on the pedestal
     else
       ac.cy = base_y[i] + 0.15 * math.sin(t * 2.2 + i)
     end
-    if not collected[i] then
+    -- the Golden Acorn can't be claimed until both switches are thrown
+    if not collected[i] and (i ~= GOLD or gold_unlocked) then
       local dx, dz = player.x - ac.cx, player.z - ac.cz
       local dy = player.jump - ac.cy
       if dx * dx + dz * dz < 0.85 * 0.85 and dy > -0.7 and dy < 1.6 then

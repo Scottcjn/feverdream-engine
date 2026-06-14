@@ -48,8 +48,15 @@ boxes = {
   { cx = -11.5, cz = 11.0, hx = 0.26, hz = 0.26, h = 0.5, r = 0.78, g = 0.56, dyn = true, solid = false, shape = "acorn" },
   { cx =  4.5,  cz = 11.5, hx = 0.26, hz = 0.26, h = 0.5, r = 0.78, g = 0.56, dyn = true, solid = false, shape = "acorn" },
   { cx =  7.0,  cz =  7.5, hx = 0.26, hz = 0.26, h = 0.5, r = 0.78, g = 0.56, dyn = true, solid = false, shape = "acorn" },
+  -- [20] WHISKERS the cat (friendly) — reach her and she yowls Biscuit into a
+  -- long stun so you can raid his yard. She needs a moment between yowls.
+  { cx =  2.5,  cz =  6.0, hx = 0.45, hz = 0.45, h = 0.55, cy = 0, dyn = true, r = 0.86, g = 0.86, shape = "baddie" },
+  -- [21] BOUNCE PAD (orange) at the stash-tower base — spring up to the top
+  { cx = -11.5, cz =  8.4, hx = 1.0, hz = 1.0, h = 0.20, r = 0.95, g = 0.55 },
 }
 
+local WHISKERS, PAD = boxes[20], boxes[21]
+local whisker_cd = 0
 local SWEEP, BRIDGE, SPIN = boxes[5], boxes[6], boxes[7]
 local BISCUIT, HOME, CHAIN_R = boxes[10], { x = 5.5, z = 9.5 }, 3.6
 local HEART, STAR = boxes[11], boxes[12]
@@ -75,6 +82,26 @@ function on_tick(t, dt, player)
   star_t = math.max(0, star_t - dt)
   if star_t > 0 then speed_mult, jump_mult = 1.45, 1.18
   else speed_mult, jump_mult = 1.0, 1.0 end
+
+  -- WHISKERS the cat: walk up to her and she yowls Biscuit into a long stun
+  -- (with a cooldown). A friendly NPC who turns the fight in your favor.
+  whisker_cd = math.max(0, whisker_cd - dt)
+  WHISKERS.cy = 0.06 * math.abs(math.sin(t * 4))     -- a flicking tail
+  do
+    local wdx, wdz = player.x - WHISKERS.cx, player.z - WHISKERS.cz
+    if wdx * wdx + wdz * wdz < 2.2 * 2.2 and whisker_cd <= 0 then
+      stun = 4.0; whisker_cd = 8.0
+      play_sound("blip", 1.4)
+    end
+  end
+
+  -- BOUNCE PAD: stand on the orange pad to spring up to the stash tower
+  if player.grounded and
+     math.abs(player.x - PAD.cx) < PAD.hx + 0.4 and
+     math.abs(player.z - PAD.cz) < PAD.hz + 0.4 then
+    bounce = 11.0
+    play_sound("jump", 1.1)
+  end
 
   -- BISCUIT: eager hops at his post; lunges when Chunkins wanders close;
   -- the chain always wins. Bonks only stun him.
