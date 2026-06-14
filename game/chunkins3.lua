@@ -25,12 +25,12 @@ boxes = {
   { cx = -14, cz =   0, hx = 0.6, hz = 13.4, h = 1.0, r = 0.20, g = 0.48 },
   -- the mountain core
   { cx =  0, cz =  7, hx = 2.4, hz = 2.4, h = 4.4, r = 0.52, g = 0.40 },
-  -- the spiral ascent (each ledge jumpable from the last)
-  { cx = -4.5, cz =  3.5, hx = 1.1, hz = 1.1, h = 0.8, r = 0.70, g = 0.46 },
-  { cx = -5.5, cz =  7.0, hx = 1.1, hz = 1.1, h = 1.6, r = 0.68, g = 0.44 },
-  { cx = -3.5, cz = 10.5, hx = 1.1, hz = 1.1, h = 2.4, r = 0.66, g = 0.42 },
-  { cx =  0.5, cz = 11.5, hx = 1.1, hz = 1.1, h = 3.2, r = 0.64, g = 0.41 },
-  { cx =  4.0, cz = 10.0, hx = 1.1, hz = 1.1, h = 4.0, r = 0.62, g = 0.40 },
+  -- the spiral ascent — WIDE tops so a hop lands square (no sliding off a ledge)
+  { cx = -4.5, cz =  3.5, hx = 1.5, hz = 1.5, h = 0.8, r = 0.70, g = 0.46 },
+  { cx = -5.5, cz =  7.0, hx = 1.5, hz = 1.5, h = 1.6, r = 0.68, g = 0.44 },
+  { cx = -3.5, cz = 10.5, hx = 1.5, hz = 1.5, h = 2.4, r = 0.66, g = 0.42 },
+  { cx =  0.5, cz = 11.5, hx = 1.6, hz = 1.6, h = 3.2, r = 0.64, g = 0.41 },
+  { cx =  4.0, cz = 10.0, hx = 1.5, hz = 1.5, h = 4.0, r = 0.62, g = 0.40 },
   -- the chaser (fast, relentless, respawns) and THE THIEF
   { cx =  11, cz = -11, hx = 0.45, hz = 0.55, h = 0.9, cy = 0, dyn = true, shape = "baddie" },
   { cx = -11, cz = -8,  hx = 0.45, hz = 0.55, h = 0.9, cy = 0, dyn = true, shape = "baddie" },
@@ -131,9 +131,19 @@ local function run_baddies(t, dt, player)
   end
 end
 
+-- high on the mountain the wind shoves you sideways — mind your footing
+local function run_wind(t, dt, player)
+  if player.jump > 2.5 then
+    local g = math.sin(t * 0.8) * 3.2 * dt
+    push_x = (push_x or 0) + g
+    push_z = (push_z or 0) + g * 0.4
+  end
+end
+
 function on_tick(t, dt, player)
   if game_state ~= "playing" then return end
   run_baddies(t, dt, player)
+  run_wind(t, dt, player)
   for i, ac in ipairs(ACORNS) do
     if collected[i] then
       ac.cy = -10
