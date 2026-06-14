@@ -10,3 +10,8 @@ daemon/__pycache__/
 game/fd-game
 game/libfdpost.so
 game/fd-game-asan
+
+# Windows cross-build artifacts (mingw)
+game/fd-game.exe
+game/SDL2.dll
+game/win-deps/

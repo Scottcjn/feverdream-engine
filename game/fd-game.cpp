@@ -31,9 +31,7 @@
 #include <vector>
 #include <chrono>
 
-#include <unistd.h>
-#include <sys/socket.h>
-#include <sys/un.h>
+#include "fd_platform.h"   // cross-platform socket shim (AF_UNIX / TCP loopback)
 
 extern "C" {
 #include <lua.h>
@@ -41,7 +39,9 @@ extern "C" {
 #include <lauxlib.h>
 }
 
-#include <dlfcn.h>
+#ifndef _WIN32
+#include <dlfcn.h>          // GPU post is dlopen'd — POSIX/CUDA path only
+#endif
 
 #include "fd_audio.h"
 static FdAudio g_audio;
@@ -58,6 +58,13 @@ struct GpuPost {
     bool active = false;
 
     bool load(int inW, int inH, int outW, int outH) {
+#ifdef _WIN32
+        // GPU post (CUDA libfdpost) is Linux-only for now; the Windows build
+        // always takes the plain SDL upscale path. The future Windows daemon
+        // and any GPU port would re-enable this via LoadLibrary.
+        (void)inW; (void)inH; (void)outW; (void)outH;
+        return false;
+#else
         const char* env = getenv("FD_GPU");
         if (!env || !*env || strcmp(env, "0") == 0) return false;
         // resolve the .so next to the EXECUTABLE, never the cwd (tri-brain:
@@ -90,10 +97,13 @@ struct GpuPost {
         }
         active = true;
         return true;
+#endif
     }
     void unload() {
         if (active && shutdown) shutdown();
+#ifndef _WIN32
         if (handle) dlclose(handle);
+#endif
         handle = NULL; active = false;
     }
 };
@@ -108,34 +118,23 @@ static const uint8_t FLAG_WANT_FB = 0x01;
 struct Declare { std::string name; float value; };
 
 class FdRenderer {
-    int fd_ = -1;
+    fd_sock_t fd_ = FD_BAD_SOCK;
     std::string path_, scene_text_;   // for reconnect: where + what world
 public:
     std::vector<uint8_t> fb;          // RGBA8 of the last frame
     uint32_t fb_w = 0, fb_h = 0, frame_us = 0;
 
     bool connect_to(const char* path) {
-        if (fd_ >= 0) { close(fd_); fd_ = -1; }
-        fd_ = socket(AF_UNIX, SOCK_STREAM, 0);
-        if (fd_ < 0) return false;
-        // a hung/dead daemon must FAIL the call, never freeze the window
-        // (2s >> any real frame; checked because this IS the safety guarantee)
-        struct timeval tv = { 2, 0 };
-        if (setsockopt(fd_, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv) != 0 ||
-            setsockopt(fd_, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv) != 0)
-            fprintf(stderr, "fd-game: WARNING socket timeouts not set (%s) — "
-                    "a daemon hang could freeze the window\n", strerror(errno));
-        struct sockaddr_un a; memset(&a, 0, sizeof a);
-        a.sun_family = AF_UNIX;
-        snprintf(a.sun_path, sizeof a.sun_path, "%s", path);
-        if (connect(fd_, (struct sockaddr*)&a, sizeof a) != 0) {
-            close(fd_); fd_ = -1;
-            return false;
-        }
+        if (fd_sock_valid(fd_)) { fd_sock_close(fd_); fd_ = FD_BAD_SOCK; }
+        // fd_sock_dial creates the socket, arms the 2s rcv/snd timeout (a hung
+        // daemon must FAIL the call, never freeze the window), and connects —
+        // AF_UNIX on POSIX, TCP loopback on Windows. See fd_platform.h.
+        fd_ = fd_sock_dial(path);
+        if (!fd_sock_valid(fd_)) return false;
         path_ = path;
         return true;
     }
-    ~FdRenderer() { if (fd_ >= 0) close(fd_); }
+    ~FdRenderer() { if (fd_sock_valid(fd_)) fd_sock_close(fd_); }
 
     bool scene(const std::string& sdl) {
         scene_text_ = sdl;            // remembered for reconnect
@@ -196,7 +195,7 @@ private:
     bool io_full(bool wr, void* buf, size_t n) {
         uint8_t* p = (uint8_t*)buf;
         while (n) {
-            ssize_t r = wr ? write(fd_, p, n) : read(fd_, p, n);
+            long r = wr ? (long)fd_sock_send(fd_, p, n) : (long)fd_sock_recv(fd_, p, n);
             if (r <= 0) return false;
             p += r; n -= (size_t)r;
         }
@@ -1378,11 +1377,7 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
         FILE* sf = fopen("splash.pov", "rb");
         if (!sf) {
             char exe[448];
-            ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
-            if (n > 0) {
-                exe[n] = 0;
-                char* slash = strrchr(exe, '/');
-                if (slash) *slash = 0;
+            if (fd_exe_dir(exe, sizeof exe)) {
                 char alt[512];
                 snprintf(alt, sizeof alt, "%s/splash.pov", exe);
                 sf = fopen(alt, "rb");
@@ -1600,6 +1595,14 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
 
 int main(int argc, char** argv) {
     setvbuf(stdout, NULL, _IOLBF, 0);   // death notes must reach the log
+    if (fd_net_startup() != 0) {        // WSAStartup on Windows; no-op on POSIX
+        fprintf(stderr, "fd-game: socket subsystem init failed\n");
+        return 1;
+    }
+    // atexit so WSACleanup runs AFTER main's FdRenderer is destroyed (else its
+    // dtor would closesocket() post-WSACleanup), and on every exit path
+    // including the early connect/scene-failure returns below (tri-brain: Codex).
+    atexit(fd_net_cleanup);
     bool st = argc > 1 && strcmp(argv[1], "--selftest") == 0;
     bool gt = argc > 1 && strcmp(argv[1], "--gametest") == 0;
     bool headless = st || gt;
@@ -1638,5 +1641,5 @@ int main(int argc, char** argv) {
                  : play(r, winW, winH, rdiv < 1 ? 1 : rdiv);
     g_audio.shutdown();
     if (g_L) lua_close(g_L);
-    return rc;
+    return rc;                          // fd_net_cleanup runs via atexit (above)
 }
