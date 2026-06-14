@@ -35,7 +35,7 @@ The only thing that makes the flags reliably stop is an **Authenticode
 signature**. Options, cheapest first:
 
 1. **SignPath.io — free for open-source projects.** Provides a certificate and a
-   signing pipeline for OSS. Best fit for this repo. (https://signpath.io/open-source)
+   signing pipeline for OSS. Best fit for this repo. Apply at https://signpath.org
 2. **OV code-signing certificate** (~$100-250/yr) — signs the exe; reputation
    then builds with downloads.
 3. **EV code-signing certificate** (~$300/yr) — grants **instant** Microsoft
