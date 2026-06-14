@@ -24,7 +24,7 @@
 #include <climits>
 
 // Loopback port for the Windows transport; overridable with FD_PORT.
-#define FD_DEFAULT_PORT 57999
+#define FD_DEFAULT_PORT 47999
 
 #ifdef _WIN32
   #include <winsock2.h>

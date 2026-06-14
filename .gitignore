@@ -15,3 +15,8 @@ game/fd-game-asan
 game/fd-game.exe
 game/SDL2.dll
 game/win-deps/
+
+# Windows daemon build artifacts (MSVC, built on .121)
+daemon/fd-daemon.exe
+daemon/*.obj
+daemon/*.log

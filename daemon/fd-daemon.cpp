@@ -24,11 +24,15 @@
 #include <string>
 #include <chrono>
 
+#include "fd_listen.h"          // cross-platform listen-side socket shim
+#ifdef _WIN32
+#include <io.h>                 // _open/_close for exclusive temp-file create
+#include <fcntl.h>              // _O_CREAT|_O_EXCL
+#include <sys/stat.h>           // _S_IREAD|_S_IWRITE
+#else
 #include <unistd.h>
 #include <signal.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <sys/stat.h>
+#endif
 
 #include "vfe.h"
 #include "vfeplatform.h"
@@ -36,6 +40,14 @@
 using namespace vfe;
 using namespace vfePlatform;
 using namespace pov_frontend;
+
+// The headless render session: POV's platform front-end subclass. vfe ships a
+// Unix and a Windows implementation; pick the one for this build.
+#ifdef _WIN32
+  typedef vfePlatform::vfeWinSession  FdSession;
+#else
+  typedef vfePlatform::vfeUnixSession FdSession;
+#endif
 
 // ---- wire protocol (PROTOCOL.md) -------------------------------------------
 static const uint8_t  FD_MAGIC      = 0xFD;
@@ -94,29 +106,29 @@ static vfeDisplay* CreateCaptureDisplay(unsigned int w, unsigned int h,
 }
 
 // ---- socket I/O: full reads/writes, partial-read safe ----------------------
-static bool read_full(int fd, void* buf, size_t n)
+static bool read_full(fd_sock_t fd, void* buf, size_t n)
 {
     unsigned char* p = (unsigned char*)buf;
     while (n) {
-        ssize_t r = read(fd, p, n);
+        long r = (long)fd_sock_read(fd, p, n);
         if (r <= 0) return false;          // EOF or error => drop client
         p += r; n -= (size_t)r;
     }
     return true;
 }
 
-static bool write_full(int fd, const void* buf, size_t n)
+static bool write_full(fd_sock_t fd, const void* buf, size_t n)
 {
     const unsigned char* p = (const unsigned char*)buf;
     while (n) {
-        ssize_t r = write(fd, p, n);
+        long r = (long)fd_sock_write(fd, p, n);
         if (r <= 0) return false;
         p += r; n -= (size_t)r;
     }
     return true;
 }
 
-static bool send_msg(int fd, uint8_t type, uint8_t flags,
+static bool send_msg(fd_sock_t fd, uint8_t type, uint8_t flags,
                      const void* payload, uint32_t len)
 {
     uint8_t hdr[8] = { FD_MAGIC, FD_VERSION, type, flags,
@@ -126,7 +138,7 @@ static bool send_msg(int fd, uint8_t type, uint8_t flags,
     return len == 0 || write_full(fd, payload, len);
 }
 
-static bool send_error(int fd, uint32_t code, const char* msg)
+static bool send_error(fd_sock_t fd, uint32_t code, const char* msg)
 {
     std::vector<uint8_t> p(4 + strlen(msg));
     memcpy(p.data(), &code, 4);
@@ -158,7 +170,7 @@ static double now_ms()
     return duration<double, std::milli>(steady_clock::now().time_since_epoch()).count();
 }
 
-static bool render_frame(vfeUnixSession* s, const std::string& scene,
+static bool render_frame(FdSession* s, const std::string& scene,
                          const std::string& libdir, int w, int h, float clock,
                          bool aa, const std::vector<Declare>& decls,
                          uint32_t* frame_time_us)
@@ -191,7 +203,7 @@ static bool render_frame(vfeUnixSession* s, const std::string& scene,
 }
 
 // ---- per-client message loop; returns false when the daemon should exit -----
-static bool serve_client(int cfd, vfeUnixSession* session,
+static bool serve_client(fd_sock_t cfd, FdSession* session,
                          const std::string& scene_path, const std::string& libdir)
 {
     bool have_scene = false;
@@ -287,62 +299,95 @@ int main(int argc, char** argv)
     std::string sock_path = (argc > 1) ? argv[1] : "/tmp/feverdream.sock";
     std::string libdir    = (argc > 2) ? argv[2] : "/usr/share/povray-3.7/include";
 
-    signal(SIGPIPE, SIG_IGN);
+#ifndef _WIN32
+    signal(SIGPIPE, SIG_IGN);   // POSIX: a dead client must not kill us
+#endif
+    if (fd_net_startup() != 0) {            // WSAStartup on Windows; no-op on POSIX
+        fprintf(stderr, "fd-daemon: socket subsystem init failed\n");
+        return 1;
+    }
 
-    // scene file lives in shm: SCENE_FULL rewrites it, every RENDER re-parses
-    // it. mkstemps gives an unpredictable name created O_EXCL — a pre-planted
+    // Temp scene file: SCENE_FULL rewrites it, every RENDER re-parses it.
+    char scene_path[260];
+#ifdef _WIN32
+    // Exclusive create with an unpredictable name — the Windows analog of the
+    // POSIX mkstemps below: _O_EXCL fails if the path already exists, so a
+    // pre-planted file/link can't redirect POV's scene writes (tri-brain: Codex).
+    char tmpdir[MAX_PATH];
+    DWORD tn = GetTempPathA(sizeof tmpdir, tmpdir);
+    if (tn == 0 || tn + 24 >= sizeof scene_path) { fprintf(stderr, "fd-daemon: temp path too long\n"); return 1; }
+    int scene_fd = -1;
+    for (int tries = 0; tries < 64 && scene_fd < 0; ++tries) {
+        unsigned rnd = (unsigned)GetCurrentProcessId() ^ (GetTickCount() << 8) ^ ((unsigned)tries * 2654435761u);
+        snprintf(scene_path, sizeof scene_path, "%sfd-scene-%08x.pov", tmpdir, rnd);
+        scene_fd = _open(scene_path, _O_CREAT | _O_EXCL | _O_WRONLY | _O_BINARY, _S_IREAD | _S_IWRITE);
+    }
+    if (scene_fd < 0) { fprintf(stderr, "fd-daemon: could not create temp scene file\n"); return 1; }
+    _close(scene_fd);   // POV opens by path; the name + exclusive create are what matter
+#else
+    // mkstemps gives an unpredictable name created O_EXCL — a pre-planted
     // symlink at a guessable path can't redirect our writes (tri-brain review)
-    char scene_path[128];
     snprintf(scene_path, sizeof scene_path, "%s/fd-scene-XXXXXX.pov",
              access("/dev/shm", W_OK) == 0 ? "/dev/shm" : "/tmp");
     int scene_fd = mkstemps(scene_path, 4);
     if (scene_fd < 0) { perror("mkstemps"); return 1; }
     close(scene_fd);   // POV opens by path; the name + 0600 mode are what matter
+#endif
 
-    vfeUnixSession* session = new vfeUnixSession();
+#ifdef _WIN32
+    FdSession* session = new FdSession(0);   // vfeWinSession takes a session id
+#else
+    FdSession* session = new FdSession();
+#endif
     if (session->Initialize(NULL, NULL) != vfeNoError) {
         fprintf(stderr, "fd-daemon: session init failed: %s\n", session->GetErrorString());
         return 1;
     }
     session->SetDisplayCreator(CreateCaptureDisplay);
 
-    int sfd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (sfd < 0) { perror("socket"); return 1; }
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof addr);
-    addr.sun_family = AF_UNIX;
-    snprintf(addr.sun_path, sizeof addr.sun_path, "%s", sock_path.c_str());
-    // only ever unlink an actual socket — a typo'd or hostile path must not
-    // delete an arbitrary file (tri-brain review)
-    struct stat st;
-    if (lstat(sock_path.c_str(), &st) == 0) {
-        if (!S_ISSOCK(st.st_mode)) {
-            fprintf(stderr, "fd-daemon: %s exists and is not a socket — refusing\n",
-                    sock_path.c_str());
-            return 1;
-        }
-        unlink(sock_path.c_str());
+    // AF_UNIX socket (POSIX) / TCP loopback (Windows) — see fd_listen.h. The
+    // non-socket-refusal + unlink + 0600 safety lives in the POSIX branch there.
+    fd_sock_t sfd = fd_listen(sock_path.c_str());
+    if (!fd_sock_valid(sfd)) {               // clean up the temp scene file we just made
+        session->Shutdown(); delete session;
+        remove(scene_path);
+        fd_net_cleanup();
+        return 1;
     }
-    if (bind(sfd, (struct sockaddr*)&addr, sizeof addr) < 0) { perror("bind"); return 1; }
-    chmod(sock_path.c_str(), 0600);        // local user only
-    if (listen(sfd, 1) < 0) { perror("listen"); return 1; }
 
+#ifdef _WIN32
+    // fd_listen already logged the resolved "listening on 127.0.0.1:<port>";
+    // sock_path here is the raw arg (a placeholder path by default), not the
+    // real endpoint — so don't restate it.
+    printf("fd-daemon: engine resident (scene buffer %s)\n", scene_path);
+#else
+    // single combined banner — matches the pre-Windows Linux output exactly
     printf("fd-daemon: engine resident, listening on %s (scene buffer %s)\n",
            sock_path.c_str(), scene_path);
+#endif
     fflush(stdout);
 
     bool run = true;
     while (run) {
-        int cfd = accept(sfd, NULL, NULL);
-        if (cfd < 0) { if (errno == EINTR) continue; perror("accept"); break; }
+        fd_sock_t cfd = fd_accept(sfd);
+        if (!fd_sock_valid(cfd)) {
+#ifndef _WIN32
+            if (errno == EINTR) continue;   // signal, not a real failure
+            perror("fd-daemon: accept");
+#else
+            fprintf(stderr, "fd-daemon: accept failed (WSA %d)\n", WSAGetLastError());
+#endif
+            break;
+        }
         run = serve_client(cfd, session, scene_path, libdir);
-        close(cfd);
+        fd_sock_close(cfd);
     }
 
     printf("fd-daemon: shutdown\n");
     session->Shutdown(); delete session;
-    close(sfd);
-    unlink(sock_path.c_str());
-    unlink(scene_path);
+    fd_sock_close(sfd);
+    fd_listen_cleanup(sock_path.c_str());   // unlink AF_UNIX file (POSIX); no-op on Win
+    remove(scene_path);                     // portable temp-file removal
+    fd_net_cleanup();
     return 0;
 }
