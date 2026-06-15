@@ -9,8 +9,8 @@
 1 RT_MANIFEST "fd-game.manifest"
 
 VS_VERSION_INFO VERSIONINFO
- FILEVERSION    0,3,1,0
- PRODUCTVERSION 0,3,1,0
+ FILEVERSION    0,4,0,0
+ PRODUCTVERSION 0,4,0,0
  FILEFLAGSMASK  0x3fL
  FILEFLAGS      0x0L
  FILEOS         VOS_NT_WINDOWS32
@@ -23,12 +23,12 @@ BEGIN
     BEGIN
       VALUE "CompanyName",      "Elyan Labs"
       VALUE "FileDescription",  "Chunkins: The Search for the Golden Acorn (Feverdream Engine)"
-      VALUE "FileVersion",      "0.3.1.0"
+      VALUE "FileVersion",      "0.4.0.0"
       VALUE "InternalName",     "fd-game"
       VALUE "LegalCopyright",   "Copyright (C) 2026 Elyan Labs. MIT licensed."
       VALUE "OriginalFilename", "fd-game.exe"
       VALUE "ProductName",      "Chunkins / Feverdream Engine"
-      VALUE "ProductVersion",   "0.3.1.0"
+      VALUE "ProductVersion",   "0.4.0.0"
       VALUE "Comments",         "Open source: https://github.com/Scottcjn/feverdream-engine"
     END
   END
