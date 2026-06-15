@@ -22,3 +22,5 @@ daemon/*.obj
 daemon/*.log
 
 game/fd-game-res.o
+
+game/fd-daemon.exe
