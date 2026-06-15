@@ -28,12 +28,19 @@ set SYSLIBS=ws2_32.lib user32.lib gdi32.lib advapi32.lib shell32.lib ole32.lib o
 REM delete any stale binary so a failed build can't masquerade as success.
 if exist fd-daemon.exe del /q fd-daemon.exe
 
+REM provenance: compile version info + manifest + icon (rc.exe from the SDK), so
+REM the daemon isn't a bare metadata-less exe (the classic AV false-positive
+REM profile). Linked in below as fd-daemon.res.
+echo Compiling resources (version info + manifest + icon)...
+rc /nologo /fo fd-daemon.res fd-daemon.rc
+if errorlevel 1 ( echo *** RC FAILED *** & exit /b 1 )
+
 echo ============================================================
 echo  Compiling + linking fd-daemon.exe (MSVC, /MT, x64)
 echo ============================================================
 REM fd_win_stubs.cpp supplies the povwin:: + pov_frontend:: platform hooks the
 REM (replaced) GUI app would otherwise provide. /LTCG: POV libs are built /GL.
-cl /nologo /EHsc /O2 /MT /bigobj %DEF% %INC% fd-daemon.cpp fd_win_stubs.cpp ^
+cl /nologo /EHsc /O2 /MT /bigobj %DEF% %INC% fd-daemon.cpp fd_win_stubs.cpp fd-daemon.res ^
    /Fe:fd-daemon.exe ^
    /link /LTCG /LIBPATH:"%POVLIB%" %LIBS% %SYSLIBS%
 if errorlevel 1 ( echo *** CL/LINK FAILED *** & exit /b 1 )
