@@ -47,6 +47,10 @@ static inline unsigned fd_parse_port(const char* s) {
       if (n > (size_t)INT_MAX) n = INT_MAX;
       return ::send(s, (const char*)b, (int)n, 0);
   }
+  static inline int fd_sock_set_read_timeout(fd_sock_t s, unsigned seconds) {
+      DWORD timeout_ms = (DWORD)seconds * 1000u;
+      return setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout_ms, sizeof timeout_ms);
+  }
 
   // Bind+listen on 127.0.0.1:<port from `path` or FD_PORT or default>. The
   // `path` arg is the daemon's socket-path argument, reused as a port here so
@@ -93,6 +97,7 @@ static inline unsigned fd_parse_port(const char* s) {
   #include <sys/socket.h>
   #include <sys/un.h>
   #include <sys/stat.h>
+  #include <sys/time.h>
   #include <cerrno>
   typedef int fd_sock_t;
   #define FD_BAD_SOCK (-1)
@@ -103,6 +108,12 @@ static inline unsigned fd_parse_port(const char* s) {
   static inline int  fd_sock_close(fd_sock_t s) { return close(s); }
   static inline ssize_t fd_sock_read(fd_sock_t s, void* b, size_t n) { return read(s, b, n); }
   static inline ssize_t fd_sock_write(fd_sock_t s, const void* b, size_t n) { return write(s, b, n); }
+  static inline int fd_sock_set_read_timeout(fd_sock_t s, unsigned seconds) {
+      struct timeval tv;
+      tv.tv_sec = (time_t)seconds;
+      tv.tv_usec = 0;
+      return setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+  }
 
   // The exact AF_UNIX listener fd-daemon always used: refuse a non-socket at
   // the path (never unlink an arbitrary/hostile file), unlink a stale socket,

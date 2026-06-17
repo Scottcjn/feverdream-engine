@@ -206,6 +206,7 @@ static bool render_frame(FdSession* s, const std::string& scene,
 static bool serve_client(fd_sock_t cfd, FdSession* session,
                          const std::string& scene_path, const std::string& libdir)
 {
+    fd_sock_set_read_timeout(cfd, 5);
     bool have_scene = false;
     std::vector<uint8_t> payload;
 
