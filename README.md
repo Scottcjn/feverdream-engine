@@ -1,6 +1,6 @@
 # Feverdream Engine — real-time POV-Ray
 
-[![BCOS Certified](https://img.shields.io/badge/BCOS-Certified-brightgreen?style=flat)](BCOS.md) [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![BCOS Certified](https://img.shields.io/badge/BCOS-Certified-brightgreen?style=flat)](BCOS.md) [![License: AGPL v3](https://img.shields.io/badge/License-AGPLv3-blue.svg)](LICENSE)
 
 > The gorgeous old raytraced look — *ReBoot*, *Donkey Kong Country*, early *Toy
 > Story* — rendered **live, in a game loop**, instead of baked overnight.
@@ -94,6 +94,6 @@ antivirus still flags an unsigned/older build, see `game/WINDOWS_ANTIVIRUS.md`.
 POV-Ray 3.7 is **AGPLv3**. A patched, distributed daemon is a derivative work
 with source-disclosure + network obligations. See `ARCHITECTURE.md` → Licensing
 before shipping anything that bundles it. The benchmark + design docs here are
-original work under this repo's license.
+original work under AGPL-3.0 (see LICENSE).
 
 Built by Elyan Labs · powered by Elyan-class agents.
