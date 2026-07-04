@@ -26,6 +26,7 @@ run "GOLDEN ACORN world 4 (gametest)"        ./fd-game --gametest 240 "$SOCK" ch
 run "WINDMILL PASS world 5 (gametest)"       ./fd-game --gametest 240 "$SOCK" chunkins5.lua
 run "HAZELNUT BRIDGES world 6 (gametest)"    ./fd-game --gametest 240 "$SOCK" chunkins_hazelnut_bridges.lua
 run "CASCADE HOLLOW world 7 (gametest)"      ./fd-game --gametest 240 "$SOCK" chunkins7.lua
+run "BRIDGE GARDEN bonus world (gametest)"   ./fd-game --gametest 240 "$SOCK" chunkins_bridge_garden.lua
 
 echo "=== level sandbox (banned: os/io/load/require/debug)"
 SBOX=$(SDL_AUDIODRIVER=dummy ./fd-game --gametest 120 "$SOCK" test_sandbox.lua)
