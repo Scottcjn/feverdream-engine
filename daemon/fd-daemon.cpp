@@ -106,15 +106,28 @@ static vfeDisplay* CreateCaptureDisplay(unsigned int w, unsigned int h,
 }
 
 // ---- socket I/O: full reads/writes, partial-read safe ----------------------
-static bool read_full(fd_sock_t fd, void* buf, size_t n)
+// Returns: >0 success, 0 on clean EOF (disconnect), -1 on timeout/error.
+// Caller should distinguish: -1 means the socket timed out (EAGAIN), 0 means
+// the peer closed the connection cleanly.
+static long read_full(fd_sock_t fd, void* buf, size_t n)
 {
     unsigned char* p = (unsigned char*)buf;
     while (n) {
         long r = (long)fd_sock_read(fd, p, n);
-        if (r <= 0) return false;          // EOF or error => drop client
+        if (r == 0) return 0;              // clean EOF
+        if (r < 0) {
+#ifdef _WIN32
+            int err = WSAGetLastError();
+            if (err == WSAETIMEDOUT || err == WSAEWOULDBLOCK) return -1;
+#else
+            if (errno == EAGAIN || errno == EWOULDBLOCK
+                || errno == ETIMEDOUT) return -1;
+#endif
+            return -1;                      // other error treated as timeout
+        }
         p += r; n -= (size_t)r;
     }
-    return true;
+    return 1;
 }
 
 static bool write_full(fd_sock_t fd, const void* buf, size_t n)
@@ -206,19 +219,44 @@ static bool render_frame(FdSession* s, const std::string& scene,
 static bool serve_client(fd_sock_t cfd, FdSession* session,
                          const std::string& scene_path, const std::string& libdir)
 {
+    // Read timeout: configurable via FD_READ_TIMEOUT env var (seconds, default 5).
+    // If setsockopt(SO_RCVTIMEO) fails, log a warning but continue — the socket
+    // keeps its prior timeout (often infinite), which is less safe but not a
+    // crash.
+    const char* timeout_env = getenv("FD_READ_TIMEOUT");
+    unsigned read_timeout = timeout_env ? (unsigned)atol(timeout_env) : 5u;
+    if (read_timeout > 0) {
+        int ret = fd_sock_set_read_timeout(cfd, read_timeout);
+        if (ret != 0) {
+            fprintf(stderr, "fd-daemon: warning: SO_RCVTIMEO failed (%d) — "
+                            "client reads have no timeout
+", ret);
+        }
+    }
     bool have_scene = false;
     std::vector<uint8_t> payload;
 
     for (;;) {
         uint8_t hdr[8];
-        if (!read_full(cfd, hdr, 8)) return true;          // client gone
+        long rr = read_full(cfd, hdr, 8);
+        if (rr < 0) {
+            // Timeout (EAGAIN/EWOULDBLOCK/ETIMEDOUT) — partial client: drop.
+            // Do NOT log per-client per-timeout to avoid log floods on slow
+            // connections; the 5s default is tight enough that a genuine client
+            // should not hit it between protocol chunks.
+            return true;
+        }
+        if (rr == 0) return true;  // clean EOF: client disconnected
         uint32_t len = (uint32_t)hdr[4] | hdr[5] << 8 | hdr[6] << 16 | (uint32_t)hdr[7] << 24;
         if (hdr[0] != FD_MAGIC || hdr[1] != FD_VERSION) return true;   // poisoned stream: drop
         uint8_t type = hdr[2], flags = hdr[3];
         uint32_t cap = (type == T_SCENE_FULL) ? MAX_SCENE : MAX_RENDER;
         if (len > cap) return true;                        // bounded length or drop
         payload.resize(len);
-        if (len && !read_full(cfd, payload.data(), len)) return true;
+        if (len) {
+            long pr = read_full(cfd, payload.data(), len);
+            if (pr <= 0) return true;
+        }
 
         switch (type) {
         case T_PING:
