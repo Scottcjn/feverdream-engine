@@ -46,6 +46,9 @@ extern "C" {
 #include "fd_audio.h"
 static FdAudio g_audio;
 
+#include "fd_retro.h"        // CPU old-school post (posterize/dither/scanlines)
+static FdRetro g_retro = fd_retro_from_env();
+
 // ---- optional GPU post (libfdpost.so, CUDA on the local 4070) ---------------
 // dlopened only when FD_GPU=1 — the build never needs the CUDA toolkit, and
 // a missing .so / missing GPU just means the plain SDL upscale path.
@@ -1427,8 +1430,10 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
             if (r.frame_fits(rW, rH)) {
                 if (gpu && g_gpu.frame(r.fb.data(), 0.6f, 32, gpu_out.data()) == 0)
                     SDL_UpdateTexture(tex, NULL, gpu_out.data(), winW * 4);
-                else if (!gpu)
+                else if (!gpu) {
+                    fd_retro_apply(r.fb.data(), rW, rH, g_retro);
                     SDL_UpdateTexture(tex, NULL, r.fb.data(), rW * 4);
+                }
                 SDL_RenderClear(ren);
                 SDL_RenderCopy(ren, tex, NULL, NULL);
                 SDL_RenderPresent(ren);
@@ -1622,7 +1627,10 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
                     SDL_SetTextureScaleMode(tex, SDL_ScaleModeNearest);
                 }
             }
-            if (!gpu) SDL_UpdateTexture(tex, NULL, r.fb.data(), rW * 4);
+            if (!gpu) {
+                fd_retro_apply(r.fb.data(), rW, rH, g_retro);
+                SDL_UpdateTexture(tex, NULL, r.fb.data(), rW * 4);
+            }
             SDL_RenderClear(ren);
             SDL_RenderCopy(ren, tex, NULL, NULL);
 
