@@ -26,3 +26,8 @@ game/fd-game-res.o
 game/fd-daemon.exe
 
 daemon/fd-daemon.res
+
+# stub-linked daemon built by daemon/tests/run.sh
+daemon/tests/fd-daemon-stub
+daemon/tests/*.log
+daemon/tests/__pycache__/
