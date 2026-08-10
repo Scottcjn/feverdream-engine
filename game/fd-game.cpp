@@ -164,6 +164,18 @@ public:
         // on the wire and poison the rest of the declare list
         size_t nd = 0;
         for (const Declare& d : decls) if (d.name.size() <= 32) nd++;
+        // ndecl is one byte on the wire. Truncating it here would send a count
+        // that disagrees with the bytes we then write: the daemon parses the
+        // first (nd % 256) declares, ignores the rest, and answers with a
+        // perfectly normal frame in which nothing animates. A level dense
+        // enough to hit this is a build error -- say so instead of rendering
+        // a silently wrong world. 4 declares per animated dyn object => the
+        // ceiling is ~62 of them per level.
+        if (nd > 255) {
+            fprintf(stderr, "fd-game: %zu declares exceeds the 255 the protocol "
+                            "can carry — level has too many dynamic objects\n", nd);
+            return false;
+        }
         b.push_back((uint8_t)nd);
         for (const Declare& d : decls) {
             if (d.name.size() > 32) {
@@ -1111,7 +1123,10 @@ static std::vector<Declare> declares_for(const Player& p) {
     std::vector<Declare> d = {
         {"POSX", p.x}, {"POSZ", p.z}, {"JUMP", p.jy},
         {"TURN", p.yaw * 57.29578f}, {"STEP", p.step} };
-    char nm[24];
+    // "BOX" + up to 20 digits of a size_t + one axis letter + NUL = 25. At 24
+    // the Makefile's own -Werror=format turns this into a hard build failure on
+    // gcc 12+ (-Wformat-truncation), so the buffer states the real bound.
+    char nm[32];
     for (size_t i = 0; i < g_world.size(); ++i) {
         if (!g_world[i].dyn) continue;
         snprintf(nm, sizeof nm, "BOX%zuX", i); d.push_back({nm, g_world[i].cx});

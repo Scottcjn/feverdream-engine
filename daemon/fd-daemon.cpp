@@ -61,7 +61,14 @@ static const uint8_t  T_SCENE_ACK   = 0x82;  // reply to SCENE_FULL
 static const uint8_t  T_ERROR       = 0xEE;  // reply: u32 code + utf8 message
 static const uint8_t  FLAG_WANT_FB  = 0x01;  // RENDER flags bit0
 static const uint32_t MAX_SCENE     = 32u * 1024 * 1024;
-static const uint32_t MAX_RENDER    = 4096;
+// The declare list is bounded by the wire format itself: ndecl is a u8, and a
+// name that survives valid_declare_name() is at most MAX_DECL_NAME bytes. So
+// derive the RENDER cap from those limits instead of hard-coding one — a flat
+// 4096 cut PROTOCOL.md's own maximum message (9445 bytes) off at ~110 declares.
+static const uint32_t MAX_DECLARES  = 255;                 // ndecl is u8
+static const uint32_t MAX_DECL_NAME = 32;                  // valid_declare_name()
+static const uint32_t RENDER_FIXED  = 10;                  // u16 w,u16 h,f32 clock,u8 aa,u8 ndecl
+static const uint32_t MAX_RENDER    = RENDER_FIXED + MAX_DECLARES * (1 + MAX_DECL_NAME + 4);
 static const int      MIN_DIM = 16, MAX_DIM = 4096;
 
 // error codes for T_ERROR
@@ -167,7 +174,7 @@ static float    rd_f32(const uint8_t* p) { float f; memcpy(&f, p, 4); return f; 
 // client can't inject renderer options (Output_to_File etc.) through a name
 static bool valid_declare_name(const std::string& s)
 {
-    if (s.empty() || s.size() > 32) return false;
+    if (s.empty() || s.size() > MAX_DECL_NAME) return false;
     if (!isalpha((unsigned char)s[0]) && s[0] != '_') return false;
     for (char c : s)
         if (!isalnum((unsigned char)c) && c != '_') return false;
@@ -229,8 +236,7 @@ static bool serve_client(fd_sock_t cfd, FdSession* session,
         int ret = fd_sock_set_read_timeout(cfd, read_timeout);
         if (ret != 0) {
             fprintf(stderr, "fd-daemon: warning: SO_RCVTIMEO failed (%d) — "
-                            "client reads have no timeout
-", ret);
+                            "client reads have no timeout\n", ret);
         }
     }
     bool have_scene = false;
@@ -251,7 +257,13 @@ static bool serve_client(fd_sock_t cfd, FdSession* session,
         if (hdr[0] != FD_MAGIC || hdr[1] != FD_VERSION) return true;   // poisoned stream: drop
         uint8_t type = hdr[2], flags = hdr[3];
         uint32_t cap = (type == T_SCENE_FULL) ? MAX_SCENE : MAX_RENDER;
-        if (len > cap) return true;                        // bounded length or drop
+        if (len > cap) {
+            // Bounded length: we still refuse to read the body, but say so
+            // before hanging up — a silent close leaves the client blocked in
+            // recv() until its own timeout with no idea what it did wrong.
+            send_error(cfd, E_BAD_PAYLOAD, "payload exceeds cap for this type");
+            return true;
+        }
         payload.resize(len);
         if (len) {
             long pr = read_full(cfd, payload.data(), len);
@@ -282,7 +294,7 @@ static bool serve_client(fd_sock_t cfd, FdSession* session,
         case T_RENDER: {
             // u16 w, u16 h, f32 clock, u8 aa, u8 ndecl, then ndecl x
             // (u8 namelen, name, f32 value)
-            if (len < 10) { send_error(cfd, E_BAD_PAYLOAD, "short RENDER"); break; }
+            if (len < RENDER_FIXED) { send_error(cfd, E_BAD_PAYLOAD, "short RENDER"); break; }
             if (!have_scene) { send_error(cfd, E_NO_SCENE, "no scene loaded"); break; }
             const uint8_t* p = payload.data();
             int w = rd_u16(p), h = rd_u16(p + 2);
@@ -293,7 +305,7 @@ static bool serve_client(fd_sock_t cfd, FdSession* session,
                 send_error(cfd, E_BAD_PAYLOAD, "bad dimensions"); break;
             }
             std::vector<Declare> decls;
-            size_t off = 10; bool ok = true;
+            size_t off = RENDER_FIXED; bool ok = true;
             for (unsigned i = 0; i < ndecl && ok; ++i) {
                 if (off + 1 > len) { ok = false; break; }
                 unsigned nl = p[off++];
@@ -304,6 +316,12 @@ static bool serve_client(fd_sock_t cfd, FdSession* session,
                 if (!valid_declare_name(d.name)) { ok = false; break; }
                 decls.push_back(d);
             }
+            // The declare list must consume the payload exactly. Without this,
+            // an ndecl that disagrees with the bytes actually sent (a client
+            // whose count overflowed the u8 field, or a truncated list) is
+            // rendered as a normal frame with the surplus declares silently
+            // dropped -- the animation channel goes dead and nobody is told.
+            if (ok && off != len) { ok = false; }
             if (!ok) { send_error(cfd, E_BAD_DECLARE, "bad declare list"); break; }
 
             uint32_t us = 0;

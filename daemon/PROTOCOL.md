@@ -43,6 +43,18 @@ client can never inject renderer options through a name. Values are formatted
 as floats daemon-side, never spliced raw. (The old draft's reserved pad byte
 became `ndecl`; a v0-draft client sending 0 is a valid no-declares render.)
 
+The declare list must consume the payload **exactly**: the daemon rejects a
+RENDER whose `ndecl` disagrees with the bytes that follow (code 4). `ndecl` is
+one byte, so 255 declares is the hard ceiling — a client with more must fail,
+not truncate the count, or the daemon parses the first `ndecl % 256` entries
+and returns a perfectly normal frame in which nothing animates.
+
+**Length caps.** SCENE_FULL payloads are capped at 32 MiB; RENDER at the
+largest message this format can express — `10 + 255 × (1 + 32 + 4)` = **9445**
+bytes. A header declaring more than the cap for its type gets an ERROR (code 1)
+and then the connection is closed: the body is never read, but the client is
+told why rather than left blocked in `recv()` until its own timeout.
+
 Keeping this channel to **plain SDL text + generic name=float pairs** is
 deliberate: it's the same input any POV user feeds the stock binary, which
 keeps the daemon↔game boundary arm's-length (GAME_ENGINE.md §4).
@@ -73,9 +85,15 @@ without breaking v0 clients.
 - **Object identity** is assigned by the daemon at parse and returned in a
   SCENE_FULL ack (TODO: define ack). Clients never invent ids.
 - **Partial reads**: a message is processed only when all `length` bytes arrive.
-  Short read on the socket = wait, never render a half-applied scene.
+  Short read on the socket = wait, never render a half-applied scene — but only
+  up to `FD_READ_TIMEOUT` seconds (default 5). A client that stalls mid-message
+  is dropped so it cannot hold the single-client daemon hostage.
 - **One bad message never poisons the next frame** — validate header magic +
-  version + bounded length before reading payload; on violation, drain + reset.
+  version + bounded length before reading payload. A message the daemon can
+  answer (unknown type, bad dimensions, bad declare list) gets an ERROR and the
+  connection continues; a violation of the framing itself (bad magic, bad
+  version, over-cap length) ends the connection, because the daemon can no
+  longer tell where the next message starts.
 - **Health**: a watchdog PINGs; on miss → restart the daemon (resident processes
   lose the per-frame crash isolation the batch path has).
 - **Reconnect = fresh session.** Scene state is per-connection: a new client
