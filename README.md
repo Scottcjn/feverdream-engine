@@ -97,3 +97,10 @@ before shipping anything that bundles it. The benchmark + design docs here are
 original work under AGPL-3.0 (see LICENSE).
 
 Built by Elyan Labs · powered by Elyan-class agents.
+
+
+## RustChain bounty #14018
+
+[BOUNTY: 8 RTC] Playtest CHUNKINS — raytraced squirrel platformer (per accepted report)
+
+Submitted by 0wmz. See the bounty issue for scope.
