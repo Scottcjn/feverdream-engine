@@ -13,6 +13,10 @@ REM give the renderer a moment to start up and open its port
 ping -n 3 127.0.0.1 >nul
 
 echo Starting Chunkins - have fun!
+REM v0.4.0 workaround: the default interactive splash can stay black on some
+REM Windows systems even though the level renders fine. Force the proven
+REM gameplay path until the splash-path bug is fixed in-engine.
+set "FD_NOSPLASH=1"
 fd-game.exe 47999 1280 720 4 chunkins1.lua
 
 REM game closed: stop the renderer
