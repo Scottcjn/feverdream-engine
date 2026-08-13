@@ -1146,6 +1146,14 @@ static std::vector<Declare> declares_for(const Player& p) {
     return d;
 }
 
+/* How long a card may fail to produce a correctly sized frame before we
+ * give up on it. Generous: a raytraced splash on a slow CPU legitimately
+ * takes seconds (the reporter's i3-1005G1 runs the world at 3.3 FPS).
+ * The point is that it terminates and says why, not that it is fast. */
+#ifndef FD_CARD_FRAME_GRACE_S
+#define FD_CARD_FRAME_GRACE_S 8.0
+#endif
+
 static double now_s() {
     using namespace std::chrono;
     return duration<double>(steady_clock::now().time_since_epoch()).count();
@@ -1442,7 +1450,36 @@ static int play(FdRenderer& r, int winW, int winH, int rdiv) {
             if (auto_dismiss_s > 0 && now_s() - t0 >= auto_dismiss_s) return 0;
             std::vector<Declare> sd = { {"SPIN", (float)((now_s() - t0) * 24.0)} };
             if (!r.render(rW, rH, sd)) return 0;
-            if (r.frame_fits(rW, rH)) {
+
+            /* A card whose frame never arrives must not hang the game.
+             *
+             * This loop previously presented ONLY when frame_fits() passed and
+             * had no other exit, so a card that never produced a correctly
+             * sized framebuffer spun forever: a fully black window that still
+             * pumped events, with the title already set. That is exactly what
+             * Windows v0.4.0 does on the default splash path
+             * (feverdream-engine#18, @martinextrabox-netizen) — and
+             * FD_NOSPLASH=1 "fixes" it only by skipping this code.
+             *
+             * The --gametest path checks the same guard and PRINTS
+             * "pixels: MISSING — scene failing to render?". The interactive
+             * path checked it and said nothing. Same condition, one reports,
+             * one hangs. Cards are documented as best-effort, so a card that
+             * cannot render is skipped with a diagnostic rather than becoming
+             * fatal to startup.
+             */
+            if (!r.frame_fits(rW, rH)) {
+                if (now_s() - t0 > FD_CARD_FRAME_GRACE_S) {
+                    fprintf(stderr,
+                        "fd-game: card pixels MISSING after %.1fs — got %zu bytes, "
+                        "expected %d (%dx%d x4). Skipping card; set FD_NOSPLASH=1 "
+                        "to skip cards entirely.\n",
+                        FD_CARD_FRAME_GRACE_S, r.fb.size(), rW * rH * 4, rW, rH);
+                    return 0;
+                }
+                continue;   /* still inside the grace window: keep trying */
+            }
+            {
                 if (gpu && g_gpu.frame(r.fb.data(), 0.6f, 32, gpu_out.data()) == 0)
                     SDL_UpdateTexture(tex, NULL, gpu_out.data(), winW * 4);
                 else if (!gpu) {
